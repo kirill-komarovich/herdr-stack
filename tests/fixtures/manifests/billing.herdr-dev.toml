@@ -1,0 +1,28 @@
+[env]
+
+[local.rails]
+cmd = ["bundle", "exec", "rails", "s"]
+
+[local.sidekiq]
+cmd = ["bundle", "exec", "sidekiq"]
+
+[local.vite]
+cmd = ["bin/vite", "dev"]
+
+[docker]
+names = [
+  "db",
+  "redis",
+  "memcached",
+  "mongo",
+  "dragonfly",
+  "redis-sentinel-1",
+  "redis-sentinel-2",
+  "storefront",
+  "migrate",
+]
+one_shot = ["migrate"]
+hidden = ["gateway", "application", "web", "sidekiq", "frontend", "websockets"]
+
+[docker.notes]
+migrate = "declares no restart: key, so only a human can mark it one-shot"

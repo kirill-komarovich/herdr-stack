@@ -1,0 +1,11 @@
+# ~/projects/private/photos/.herdr-dev.toml
+#
+# The floor case. PORT=4060 comes from .mise.local.toml, so nothing here restates it.
+# fnox only guards the prod profile; dev needs no unlock.
+
+[local.phoenix]
+cmd = ["mix", "phx.server"]
+
+# The repo's only compose service, and it is the single-host *production* deploy.
+[docker]
+hidden = ["app"]

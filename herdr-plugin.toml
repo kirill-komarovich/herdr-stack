@@ -1,0 +1,12 @@
+id = "herdr-dev"
+name = "Dev stack"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+
+# A plugin pane's cwd is the plugin root, so the argv is relative and needs no PATH. The log to follow
+# arrives as HERDR_DEV_LOG at open time: one entrypoint serves every unit.
+[[panes]]
+id = "tail"
+title = "dev-stack log"
+placement = "overlay"
+command = ["./target/release/herdr-dev", "tail"]

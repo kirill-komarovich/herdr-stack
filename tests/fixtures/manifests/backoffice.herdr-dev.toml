@@ -1,0 +1,14 @@
+[env]
+
+[local.rails]
+cmd = ["bundle", "exec", "rails", "s"]
+
+[local.sidekiq]
+cmd = ["bundle", "exec", "sidekiq"]
+
+[local.vite]
+cmd = ["bin/vite", "dev"]
+
+[docker]
+names = ["db", "redis", "memcached", "storefront"]
+hidden = ["minio", "web", "sidekiq", "frontend"]

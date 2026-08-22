@@ -1,0 +1,17 @@
+[env]
+
+[local.rails]
+cmd = ["bundle", "exec", "rails", "s"]
+
+[local.sidekiq]
+cmd = ["bundle", "exec", "sidekiq"]
+
+[local.vite]
+cmd = ["bin/vite", "dev"]
+
+[docker]
+names = ["db", "redis", "memcached", "mongo", "storefront"]
+hidden = ["minio", "web", "sidekiq", "frontend"]
+
+[docker.notes]
+storefront = "run `docker compose run --rm storefront rails db:create db:migrate` once, by hand"

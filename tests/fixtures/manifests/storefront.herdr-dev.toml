@@ -1,0 +1,21 @@
+[env]
+
+[local.rails]
+cmd = ["bundle", "exec", "rails", "s"]
+
+[local.vite]
+cmd = ["bin/vite", "dev"]
+
+[docker]
+names = ["db"]
+one_shot = ["minio_init"]
+hidden = ["minio", "caddy", "minio_init", "web", "frontend"]
+
+[includes.accounts]
+path = "~/projects/acme/accounts"
+
+[includes.billing]
+path = "~/projects/acme/billing"
+
+[includes.backoffice]
+path = "~/projects/acme/backoffice"
