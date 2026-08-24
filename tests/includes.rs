@@ -29,10 +29,7 @@ const ESC: &str = "\u{1b}";
 
 /// The manifests of §5's own examples, read from where they live so a fixture and its copy cannot
 /// drift apart.
-const EXAMPLES: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/manifests"
-);
+const EXAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifests");
 
 fn example(name: &str) -> String {
     std::fs::read_to_string(PathBuf::from(EXAMPLES).join(format!("{name}.herdr-dev.toml")))
@@ -214,15 +211,14 @@ fn a_unit_started_from_the_including_view_is_the_same_unit_from_the_included_rep
         Some(State::Up),
         "the included repo's own view does not see the unit: {seen:?}",
     );
-    // The claim is the same fact from the other side: asked about the including project, the daemon
-    // names the repo that actually holds the unit rather than reporting it up here too.
+    // The other side of the same fact: the unit belongs to the repo that declared it, so asking the
+    // including project about that name says nothing at all.
     let claimed = link.status(&outer_project).expect("a status read");
-    let claim = claimed
-        .get(&ticker)
-        .and_then(|status| status.held.clone())
-        .expect("a held-by claim");
-    assert!(claim.project.contains("accounts"), "{claim:?}");
-    assert_eq!(claimed[&ticker].state, State::Down);
+    assert_eq!(
+        claimed.get(&ticker),
+        None,
+        "the including project answered for someone else's unit: {claimed:?}",
+    );
 
     // §8: the record and the log are the included repo's, keyed by its own path.
     let logs = |repo: &Path| repo.join(LOG_LINK).join("local-ticker.log");

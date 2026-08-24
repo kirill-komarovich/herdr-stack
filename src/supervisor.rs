@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::local::{self, Spec};
 use crate::store::{Identity, Record, Slot, Store};
-use crate::unit::{self, Claim, Exit, State, Status};
+use crate::unit::{self, Exit, State, Status};
 
 /// §10: `SIGTERM` to the group, `SIGKILL` five seconds later.
 pub const GRACE: Duration = Duration::from_secs(5);
@@ -89,8 +89,11 @@ impl Supervisor {
 
     pub fn start(self: &Arc<Self>, project: &Identity, spec: &Spec) -> Result<Verdict, String> {
         let handle = self.handle(project, &spec.name);
-        if let Some(claim) = self.claim_on(&handle) {
-            return Ok(Verdict::note(claim.label()));
+        if let Some(pid) = self.running(&handle) {
+            return Ok(Verdict::note(format!(
+                "{} is already running, pid {pid}",
+                spec.name
+            )));
         }
 
         let slot = self
@@ -155,8 +158,8 @@ impl Supervisor {
         })
     }
 
-    /// Every unit this project has a record or a live entry for, plus any claim another project holds
-    /// on one of its unit names.
+    /// Every unit this project has a record or a live entry for. Another project's units are its own
+    /// business, even the ones it happens to have named the same.
     pub fn status(&self, project: &Identity) -> BTreeMap<String, Status> {
         let key = project.key();
         let slot = self.store.slot(project);
@@ -177,15 +180,9 @@ impl Supervisor {
                         state: State::Up,
                         uptime: live.started_at.elapsed().ok(),
                         exit: None,
-                        held: None,
                         note: None,
                     },
                 );
-            } else {
-                statuses
-                    .entry(handle.unit.clone())
-                    .or_insert_with(|| Status::of(State::Down))
-                    .held = Some(self.claim(&handle.project, live.pid));
             }
         }
         statuses
@@ -279,25 +276,12 @@ impl Supervisor {
         self.live.lock().expect("live units").contains_key(handle)
     }
 
-    /// One daemon per machine owns every local unit, so its live table is the whole truth about who
-    /// holds a unit name — including this project itself, which may not start what it already runs.
-    fn claim_on(&self, handle: &Handle) -> Option<Claim> {
+    /// A unit name belongs to the project that declared it: two projects that both call something
+    /// `rails` each run their own. What a start has to be refused for is this project's own unit
+    /// already running, which the live table answers by the whole handle.
+    fn running(&self, handle: &Handle) -> Option<u32> {
         let live = self.live.lock().expect("live units");
-        let (holder, unit) = live
-            .iter()
-            .find(|(candidate, _)| candidate.unit == handle.unit)?;
-        Some(self.claim(&holder.project, unit.pid))
-    }
-
-    fn claim(&self, project_key: &str, pid: u32) -> Claim {
-        let slot = self.store.slot_at(project_key);
-        Claim {
-            project: slot
-                .identity()
-                .map(|identity| identity.name)
-                .unwrap_or_else(|| slot.key()),
-            pid,
-        }
+        Some(live.get(handle)?.pid)
     }
 
     fn halt(&self, handle: &Handle) -> Halt {
@@ -391,7 +375,6 @@ fn remembered(record: &Record) -> Status {
         },
         uptime: None,
         exit: record.exit,
-        held: None,
         note: None,
     }
 }
@@ -516,31 +499,65 @@ mod tests {
     }
 
     #[test]
-    fn a_unit_the_daemon_already_runs_is_refused_by_the_name_of_its_holder() {
-        let scratch = Scratch::new("held");
+    fn a_unit_this_project_already_runs_is_refused_rather_than_started_twice() {
+        let scratch = Scratch::new("twice");
         let supervisor = scratch.supervisor(Duration::from_millis(200));
-        let one = scratch.project("storefront");
-        let two = scratch.project("storefront-wt2");
+        let project = scratch.project("storefront");
 
-        let sleeper = spec("sleeper", &["sleep", "20"], &one.path);
+        let sleeper = spec("sleeper", &["sleep", "20"], &project.path);
         assert_eq!(
-            supervisor.start(&one, &sleeper).expect("start"),
+            supervisor.start(&project, &sleeper).expect("start"),
             Verdict::done()
         );
+        let key = unit::key(unit::LOCAL, "sleeper");
+        let pid = supervisor
+            .store()
+            .slot(&project)
+            .record(&key)
+            .expect("record")
+            .pid;
         let refusal = supervisor
-            .start(&two, &spec("sleeper", &["sleep", "20"], &two.path))
+            .start(&project, &sleeper)
             .expect("second start")
             .note
             .expect("a refusal");
-        assert!(refusal.starts_with("held by storefront, pid "), "{refusal}");
+        assert_eq!(
+            refusal,
+            format!("sleeper is already running, pid {}", pid.expect("a pid"))
+        );
 
-        // The refused project sees the claim on the row, as §12's note column shows it.
-        let key = unit::key(unit::LOCAL, "sleeper");
-        let claim = supervisor.status(&two)[&key]
-            .held
-            .clone()
-            .expect("a claim on the row");
-        assert_eq!(claim.project, "storefront");
+        supervisor.kill_all();
+        assert!(!supervisor.busy());
+    }
+
+    #[test]
+    fn two_projects_that_name_a_unit_alike_each_run_their_own() {
+        let scratch = Scratch::new("alike");
+        let supervisor = scratch.supervisor(Duration::from_millis(200));
+        let one = scratch.project("storefront");
+        let two = scratch.project("accounts");
+
+        for project in [&one, &two] {
+            assert_eq!(
+                supervisor
+                    .start(project, &spec("rails", &["sleep", "20"], &project.path))
+                    .expect("start"),
+                Verdict::done(),
+            );
+        }
+
+        let key = unit::key(unit::LOCAL, "rails");
+        assert_eq!(supervisor.status(&one)[&key].state, State::Up);
+        assert_eq!(supervisor.status(&two)[&key].state, State::Up);
+        let pid = |project| {
+            supervisor
+                .store()
+                .slot(project)
+                .record(&key)
+                .expect("record")
+                .pid
+        };
+        assert_ne!(pid(&one), pid(&two), "one process answered for both");
 
         supervisor.kill_all();
         assert!(!supervisor.busy());

@@ -75,12 +75,7 @@ pub fn unit_rows(
             .cloned()
             .unwrap_or_else(|| Status::of(State::Down));
         let mut row = paint(&unit.name, unit::LOCAL, &status, owner, indent);
-        // A unit that cannot be run at all says so; a claim only matters for one that can.
-        row.note = match (&unit.problem, &status.held) {
-            (Some(problem), _) => problem.clone(),
-            (None, Some(claim)) => claim.label(),
-            (None, None) => String::new(),
-        };
+        row.note = unit.problem.clone().unwrap_or_default();
         row
     });
     docker.chain(local).collect()
@@ -118,7 +113,7 @@ mod tests {
 
     use std::time::Duration;
 
-    use crate::unit::{Claim, Exit};
+    use crate::unit::Exit;
 
     fn project(text: &str) -> Project {
         Project::parse(text, Path::new("/repos/storefront/.herdr-dev.toml")).expect("manifest")
@@ -176,7 +171,6 @@ mod tests {
                     state: State::Up,
                     uptime: Some(Duration::from_secs(724)),
                     exit: None,
-                    held: None,
                     note: None,
                 },
             ),
@@ -186,7 +180,6 @@ mod tests {
                     state: State::Dead,
                     uptime: None,
                     exit: Some(Exit::Code(1)),
-                    held: None,
                     note: None,
                 },
             ),
@@ -216,25 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn a_unit_another_project_holds_says_so_in_the_note_column() {
-        let statuses = BTreeMap::from([(
-            unit::key(unit::LOCAL, "vite"),
-            Status {
-                state: State::Down,
-                uptime: None,
-                exit: None,
-                held: Some(Claim {
-                    project: "storefront-wt2".into(),
-                    pid: 51234,
-                }),
-                note: None,
-            },
-        )]);
-        let rows = rows(&project("[local.vite]\ncmd = [\"bin/vite\"]\n"), &statuses);
-        assert_eq!(rows[0].note, "held by storefront-wt2, pid 51234");
-    }
-
-    #[test]
     fn a_docker_row_wears_what_compose_said_and_its_own_note_outranks_the_manifests() {
         let statuses = BTreeMap::from([
             (
@@ -243,7 +217,6 @@ mod tests {
                     state: State::Up,
                     uptime: Some(Duration::from_secs(2460)),
                     exit: None,
-                    held: None,
                     note: Some("unhealthy".into()),
                 },
             ),
@@ -253,7 +226,6 @@ mod tests {
                     state: State::Done,
                     uptime: None,
                     exit: Some(Exit::Code(0)),
-                    held: None,
                     note: None,
                 },
             ),
@@ -290,7 +262,6 @@ mod tests {
                 state: State::Unknown,
                 uptime: None,
                 exit: None,
-                held: None,
                 note: Some("stale: up 41m00s, seen 2m30s ago".into()),
             },
         )]);

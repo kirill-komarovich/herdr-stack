@@ -463,29 +463,59 @@ fn a_daemon_started_after_a_sigkilled_predecessor_kills_the_leftovers_it_recorde
 }
 
 #[test]
-fn a_unit_another_project_already_runs_is_refused_by_the_name_of_its_holder() {
-    let scratch = Scratch::new("held");
-    let manifest = "[local.sleeper]\ncmd = [\"sh\", \"-c\", \"echo up; sleep 30\"]\n";
+fn two_projects_that_name_a_unit_alike_each_run_their_own_with_its_own_log() {
+    let scratch = Scratch::new("alike");
+    let manifest = "[local.rails]\ncmd = [\"sh\", \"-c\", \"echo up; sleep 30\"]\n";
     let one = scratch.project("storefront", manifest);
-    let two = scratch.project("storefront-wt2", manifest);
+    let two = scratch.project("accounts", manifest);
     let state = scratch.state();
     let daemon = Daemon::serving(&state);
     let mut link = daemon.link();
 
-    link.start(&one, &unit_of(&one, "sleeper")).expect("start");
-    assert!(until(PATIENCE, || log_of(&state, &one, "sleeper").contains("up")));
-    let leader = pid_of(&state, &one, "sleeper");
+    for project in [&one, &two] {
+        assert_eq!(link.start(project, &unit_of(project, "rails")), Ok(None));
+    }
+    assert!(until(PATIENCE, || log_of(&state, &one, "rails")
+        .contains("up")
+        && log_of(&state, &two, "rails").contains("up")));
+    let leaders = [pid_of(&state, &one, "rails"), pid_of(&state, &two, "rails")];
+    assert_ne!(leaders[0], leaders[1], "one process answered for both");
+    for project in [&one, &two] {
+        assert_eq!(status_of(&mut link, project, "rails").state, State::Up);
+    }
+
+    // Stopping one leaves the other alone: the name they share is not a thing they share.
+    assert_eq!(link.stop(&one, &unit_of(&one, "rails")), Ok(None));
+    assert!(local::group_empty(leaders[0]));
+    assert!(local::alive(leaders[1]));
+    assert_eq!(status_of(&mut link, &two, "rails").state, State::Up);
+    assert_eq!(status_of(&mut link, &one, "rails").state, State::Down);
+}
+
+#[test]
+fn a_unit_this_project_already_runs_is_refused_by_the_pid_it_is_running_as() {
+    let scratch = Scratch::new("twice");
+    let project = scratch.project(
+        "storefront",
+        "[local.sleeper]\ncmd = [\"sh\", \"-c\", \"echo up; sleep 30\"]\n",
+    );
+    let state = scratch.state();
+    let daemon = Daemon::serving(&state);
+    let mut link = daemon.link();
+
+    link.start(&project, &unit_of(&project, "sleeper"))
+        .expect("start");
+    assert!(until(PATIENCE, || log_of(&state, &project, "sleeper")
+        .contains("up")));
+    let leader = pid_of(&state, &project, "sleeper");
 
     let refusal = link
-        .start(&two, &unit_of(&two, "sleeper"))
+        .start(&project, &unit_of(&project, "sleeper"))
         .expect("the second start is answered, not failed")
         .expect("a refusal");
-    assert_eq!(refusal, format!("held by storefront, pid {leader}"));
+    assert_eq!(refusal, format!("sleeper is already running, pid {leader}"));
 
-    let claim = status_of(&mut link, &two, "sleeper").held.expect("a claim");
-    assert_eq!((claim.project.as_str(), claim.pid), ("storefront", leader));
-
-    assert_eq!(link.stop(&one, &unit_of(&one, "sleeper")), Ok(None));
+    assert_eq!(link.stop(&project, &unit_of(&project, "sleeper")), Ok(None));
     assert!(local::group_empty(leader));
 }
 

@@ -93,26 +93,12 @@ impl Exit {
     }
 }
 
-/// Another project running the same unit name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Claim {
-    pub project: String,
-    pub pid: u32,
-}
-
-impl Claim {
-    pub fn label(&self) -> String {
-        format!("held by {}, pid {}", self.project, self.pid)
-    }
-}
-
 /// What one row needs to know: everything else about a unit lives in its log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub state: State,
     pub uptime: Option<Duration>,
     pub exit: Option<Exit>,
-    pub held: Option<Claim>,
     /// The note column, when the state itself carries one: `unhealthy` on a service that is up all
     /// the same, or how old a row is once docker stopped answering.
     pub note: Option<String>,
@@ -124,7 +110,6 @@ impl Status {
             state,
             uptime: None,
             exit: None,
-            held: None,
             note: None,
         }
     }
@@ -154,12 +139,6 @@ impl Status {
             }
             None => {}
         }
-        if let Some(claim) = &self.held {
-            object.insert(
-                "held_by".into(),
-                json!({"project": claim.project, "pid": claim.pid}),
-            );
-        }
         if let Some(note) = &self.note {
             object.insert("note".into(), json!(note));
         }
@@ -184,12 +163,6 @@ impl Status {
                 .and_then(Value::as_u64)
                 .map(Duration::from_millis),
             exit,
-            held: value.get("held_by").and_then(|held| {
-                Some(Claim {
-                    project: held.get("project")?.as_str()?.to_string(),
-                    pid: held.get("pid")?.as_u64()? as u32,
-                })
-            }),
             note: value
                 .get("note")
                 .and_then(Value::as_str)
@@ -264,7 +237,6 @@ mod tests {
             state: State::Up,
             uptime: Some(Duration::from_secs(61)),
             exit: Some(Exit::Code(1)),
-            held: None,
             note: None,
         };
         assert_eq!(up.timing(), "1m01s");
@@ -273,7 +245,6 @@ mod tests {
             state: State::Dead,
             uptime: None,
             exit: Some(Exit::Signal(9)),
-            held: None,
             note: None,
         };
         assert_eq!(dead.timing(), "signal 9");
@@ -287,24 +258,18 @@ mod tests {
                 state: State::Up,
                 uptime: Some(Duration::from_millis(41_000)),
                 exit: None,
-                held: None,
                 note: Some("unhealthy".into()),
             },
             Status {
                 state: State::Dead,
                 uptime: None,
                 exit: Some(Exit::Code(7)),
-                held: Some(Claim {
-                    project: "storefront-wt2".into(),
-                    pid: 51234,
-                }),
                 note: None,
             },
             Status {
                 state: State::Down,
                 uptime: None,
                 exit: Some(Exit::Signal(15)),
-                held: None,
                 note: None,
             },
         ];
@@ -317,14 +282,5 @@ mod tests {
     fn a_status_without_a_state_is_refused_rather_than_guessed() {
         assert!(Status::read(&json!({})).is_err());
         assert!(Status::read(&json!({"state": "wedged"})).is_err());
-    }
-
-    #[test]
-    fn a_held_unit_names_the_holder_and_the_pid() {
-        let claim = Claim {
-            project: "storefront-wt2".into(),
-            pid: 51234,
-        };
-        assert_eq!(claim.label(), "held by storefront-wt2, pid 51234");
     }
 }
