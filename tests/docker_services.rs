@@ -1,7 +1,7 @@
 //! Docker rows over the daemon's socket.
 //!
 //! The tests that run by default create nothing: they point the daemon at a docker socket that does
-//! not exist, which is how §9's `unknown` and its stale cache are exercised without a container
+//! not exist, which is how `unknown` and its stale cache are exercised without a container
 //! anywhere near them.
 //!
 //! The test marked `#[ignore]` does create containers — a throwaway compose project of its own under
@@ -164,7 +164,7 @@ const MANIFEST: &str = "[docker]\n\
                         [docker.notes]\n\
                         plain = \"no healthcheck at all\"\n";
 
-/// Every awkward case §9 has a row for: a service with no healthcheck, one that passes a healthcheck,
+/// Every awkward case the state model has a row for: a service with no healthcheck, one that passes a healthcheck,
 /// one that fails it while plainly running, a one-shot that exits 0, one that exits non-zero, and one
 /// that is declared and never created.
 const SERVICES: &str = r#"services:
@@ -334,7 +334,7 @@ fn every_row_of_the_state_mapping_reads_the_way_docker_actually_reports_it() {
     assert_eq!(never.state, State::Down, "a service never created is down");
     assert_eq!(never.timing(), "");
 
-    // §9 has no `dead` for docker: `compose stop` exits 137, indistinguishable from a kill or an OOM.
+    // There is no `dead` for docker: `compose stop` exits 137, indistinguishable from a kill or an OOM.
     assert_eq!(
         link.stop(&project, &service(&project, "plain")),
         Ok(None),
@@ -355,7 +355,7 @@ fn every_row_of_the_state_mapping_reads_the_way_docker_actually_reports_it() {
     assert_eq!(restarted.state, State::Up, "a restart starts it again");
     assert!(restarted.uptime.is_some_and(|uptime| uptime < PATIENCE));
 
-    // §8's display cache: the reading, not the row, and written on every read.
+    // The display cache: the reading, not the row, and written on every read.
     let cached = Store::at(scratch.state())
         .slot(&identity(&project))
         .cache(&unit::key(unit::DOCKER, "plain"))

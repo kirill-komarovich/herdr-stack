@@ -1,8 +1,8 @@
-//! `L`: the log of the row under the cursor, drawn over the list (§12).
+//! `L`: the log of the row under the cursor, drawn over the list.
 //!
 //! A peek is not a viewer. It scrolls, it follows, it clips — no search, no wrapping, and no colour:
-//! an escape sequence left in the text would reach the popup's own terminal as a command rather than
-//! as content, so it is stripped here rather than rendered.
+//! what a terminal would act on is spent by the shared filter in `readable` before it ever reaches
+//! the screen.
 //!
 //! Neither source blocks the event loop. A local unit's log is read by byte offset through the same
 //! `Follower` the overlay uses, which is what lets a peek notice a restart truncating the file under
@@ -14,6 +14,7 @@ use std::process::{Child, Stdio};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use crate::manifest::Project;
+use crate::readable;
 use crate::rows::contract_home;
 use crate::store::{Identity, Store};
 use crate::tail::{Follower, RESTARTED};
@@ -23,10 +24,9 @@ pub const NO_REPO_LOG: &str = "a repo row has no single log; expand it with tab"
 const WAITING: &str = "waiting for output…";
 const ENDED: &str = "compose logs ended";
 
-/// How many lines stay scrollable. §8 lets a log grow for a week, so something has to give, and it is
-/// the oldest lines.
+/// How many lines stay scrollable. A log grows for a week, so something has to give, and it is the
+/// oldest lines.
 const CAPACITY: usize = 4000;
-/// How much of an existing log the first read takes in.
 const FIRST_READ: u64 = 256 * 1024;
 
 /// Which log a row peeks, decided before anything is opened: a compose peek spawns a child process,
@@ -81,7 +81,7 @@ impl Source {
             heading,
             feed,
             lines: Vec::new(),
-            partial: String::new(),
+            filter: readable::Filter::new(),
             top: 0,
             follow: true,
             viewport: 1,
@@ -94,8 +94,7 @@ pub struct Peek {
     heading: String,
     feed: Feed,
     lines: Vec<String>,
-    /// The tail of the last read, held back until its newline arrives.
-    partial: String,
+    filter: readable::Filter,
     top: usize,
     follow: bool,
     viewport: usize,
@@ -139,11 +138,11 @@ impl Peek {
                 }
             },
         }
-        // A fresh generation makes everything on screen history, which is exactly what §12 says a peek
-        // must not go on showing.
+        // A fresh generation makes everything on screen history, which a peek must not go on
+        // showing.
         if restarted {
             self.lines.clear();
-            self.partial.clear();
+            self.filter.reset();
             self.top = 0;
             self.push(RESTARTED.to_string());
         }
@@ -194,13 +193,8 @@ impl Peek {
     }
 
     fn absorb(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        self.partial.push_str(&String::from_utf8_lossy(bytes));
-        while let Some(at) = self.partial.find('\n') {
-            let line: String = self.partial.drain(..=at).collect();
-            self.push(readable(&line));
+        for line in self.filter.absorb(bytes) {
+            self.push(line);
         }
     }
 
@@ -279,51 +273,6 @@ fn drain(mut pipe: impl Read + Send + 'static, sender: Sender<Vec<u8>>) {
             }
         }
     });
-}
-
-/// One line with everything a terminal would act on taken out: escape sequences, carriage returns and
-/// the rest of the control characters. Colour is not rendered (§12), and a tab is spent here rather
-/// than left for the terminal to place.
-fn readable(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut characters = line.chars();
-    while let Some(character) = characters.next() {
-        match character {
-            '\u{1b}' => skip_escape(&mut characters),
-            '\t' => out.push_str("    "),
-            control if control.is_control() => {}
-            character => out.push(character),
-        }
-    }
-    out
-}
-
-fn skip_escape(characters: &mut std::str::Chars) {
-    match characters.next() {
-        // CSI: parameters up to a final byte in 0x40..=0x7e.
-        Some('[') => {
-            for character in characters.by_ref() {
-                if ('\u{40}'..='\u{7e}').contains(&character) {
-                    break;
-                }
-            }
-        }
-        // OSC: a string terminated by BEL or by ESC \.
-        Some(']') => {
-            let mut previous = ' ';
-            for character in characters.by_ref() {
-                if character == '\u{7}' || (previous == '\u{1b}' && character == '\\') {
-                    break;
-                }
-                previous = character;
-            }
-        }
-        // An escape with an intermediate byte — charset designation and its like — takes one more.
-        Some(intermediate) if ('\u{20}'..='\u{2f}').contains(&intermediate) => {
-            let _ = characters.next();
-        }
-        _ => {}
-    }
 }
 
 fn clip(line: &str, width: usize) -> String {
@@ -493,16 +442,6 @@ mod tests {
     }
 
     #[test]
-    fn colour_and_the_rest_of_the_control_characters_never_reach_the_screen() {
-        assert_eq!(readable("\u{1b}[32mgreen\u{1b}[0m done"), "green done");
-        assert_eq!(readable("\u{1b}]0;a title\u{7}shell"), "shell");
-        assert_eq!(readable("\u{1b}]0;a title\u{1b}\\shell"), "shell");
-        assert_eq!(readable("bare\rrewrite"), "barerewrite");
-        assert_eq!(readable("a\tb"), "a    b");
-        assert_eq!(readable("\u{1b}(Bplain"), "plain");
-    }
-
-    #[test]
     fn a_line_only_arrives_once_its_newline_does() {
         let scratch = Scratch::new("partial");
         std::fs::write(scratch.log(), "half").expect("log");
@@ -513,6 +452,19 @@ mod tests {
         std::fs::write(scratch.log(), "half a line\n").expect("finish the line");
         peek.pump();
         assert_eq!(shown(&mut peek, 5), ["half a line"]);
+    }
+
+    #[test]
+    fn a_line_a_unit_rewrote_in_place_peeks_as_its_final_state_rather_than_every_frame_of_it() {
+        let scratch = Scratch::new("bar");
+        std::fs::write(
+            scratch.log(),
+            "building\r[   ] 0%\r[## ] 50%\r[###] 100%\ndone\n",
+        )
+        .expect("log");
+        let mut peek = peeking(&scratch.log());
+        peek.pump();
+        assert_eq!(shown(&mut peek, 10), ["[###] 100%", "done"]);
     }
 
     #[test]

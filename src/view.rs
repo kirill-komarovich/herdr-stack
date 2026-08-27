@@ -1,9 +1,9 @@
 //! What the popup is looking at: the project the key resolved to, plus the sibling repos its manifest
-//! names — one collapsed row each, unfolded with `↹` into that repo's own units (§5, §12).
+//! names — one collapsed row each, unfolded with `↹` into that repo's own units.
 //!
 //! An included repo is a project in its own right. Its rows come from its own manifest — its own
 //! commands, its own compose services, its own `hidden` and `one_shot` — and every verb, log and state
-//! key carries that repo's own path (§8), so a unit started from the including view is the same unit
+//! key carries that repo's own path, so a unit started from the including view is the same unit
 //! from the repo's own view, and stopping it from either is one act on one thing.
 //!
 //! **One level.** An include inside an included manifest is never followed. That is what keeps
@@ -75,6 +75,14 @@ impl View {
         !self.included.is_empty()
     }
 
+    /// Whether anything on screen could be typed at. A key that would refuse every row it was pressed
+    /// on is not worth the room it takes in the footer.
+    pub fn has_terminals(&self) -> bool {
+        self.on_screen()
+            .iter()
+            .any(|(_, project)| project.local.iter().any(|unit| unit.tty))
+    }
+
     /// The manifest a row belongs to. `None` for a repo row whose manifest could not be read: there is
     /// no project to act on, which is also why no verb reaches such a row.
     pub fn project(&self, owner: Owner) -> Option<&Project> {
@@ -84,7 +92,6 @@ impl View {
         }
     }
 
-    /// Every manifest a status read has to cover: what is on screen, and nothing else.
     pub fn on_screen(&self) -> Vec<(Owner, &Project)> {
         let mut projects = vec![(Owner::Focused, &self.focused)];
         projects.extend(self.expanded.iter().filter_map(|index| {
@@ -94,7 +101,7 @@ impl View {
         projects
     }
 
-    /// What the manifests on screen could not make sense of (§5), the focused project's first and an
+    /// What the manifests on screen could not make sense of, the focused project's first and an
     /// unfolded repo's under its own name. Every one of these leaves the rest of the project usable, so
     /// the footer is the only place they are ever said.
     pub fn complaints(&self) -> Vec<String> {
@@ -281,6 +288,29 @@ mod tests {
             .find(|row| row.name == name)
             .map(|row| row.note.as_str())
             .unwrap_or_else(|| panic!("no row named {name} in {rows:?}"))
+    }
+
+    /// The attach key is offered only where something could take it, and a folded repo's units are
+    /// not on screen to be typed at.
+    #[test]
+    fn a_terminal_inside_a_folded_repo_does_not_count_until_it_is_unfolded() {
+        let repos = Repos::new("terminals");
+        let included = repos.repo(
+            "accounts",
+            "[local.console]\ncmd = [\"rails\", \"c\"]\ntty = true\n",
+        );
+        let mut view = repos.view(
+            "storefront",
+            &format!(
+                "[local.vite]\ncmd = [\"bin/vite\"]\n[includes.accounts]\npath = \"{}\"\n",
+                included.display()
+            ),
+        );
+        assert!(!view.has_terminals());
+
+        let repo = view.rows(&Statuses::new())[1].clone();
+        view.toggle(&repo).expect("a repo row unfolds");
+        assert!(view.has_terminals());
     }
 
     #[test]
@@ -536,8 +566,8 @@ mod tests {
         assert_eq!(note_of(&rows, "doubled"), "the same repo as `plain` above");
     }
 
-    /// §5's other half: a manifest is rendered anyway and says what it could not make sense of. An
-    /// included repo's complaints are its own, and are only worth saying once it is unfolded.
+    /// A manifest is rendered anyway and says what it could not make sense of. An included repo's
+    /// complaints are its own, and are only worth saying once it is unfolded.
     #[test]
     fn a_manifests_own_complaints_are_the_focused_ones_plus_an_unfolded_repos_under_its_name() {
         let repos = Repos::new("complaints");

@@ -1,4 +1,4 @@
-//! The unit state model of §9, and the one wire codec for it.
+//! The unit state model, and the one wire codec for it.
 //!
 //! Both ends of the daemon socket build and read `Status` through here, so a state, an uptime and an
 //! exit have exactly one spelling on the wire and in the rows.
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 pub const LOCAL: &str = "local";
 pub const DOCKER: &str = "docker";
 
-/// §8's state key: a local and a docker unit may share a name, and this is what keeps them apart.
+/// The state key: a local and a docker unit may share a name, and this is what keeps them apart.
 pub fn key(kind: &str, name: &str) -> String {
     format!("{kind}-{name}")
 }
@@ -68,7 +68,6 @@ impl State {
     }
 }
 
-/// How a local unit ended, as the daemon's `wait()` reported it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
     Code(i32),

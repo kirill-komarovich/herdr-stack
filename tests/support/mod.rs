@@ -14,7 +14,10 @@ use std::time::{Duration, Instant};
 
 pub const PATIENCE: Duration = Duration::from_secs(30);
 pub const STEP: Duration = Duration::from_millis(50);
-const ROWS: u16 = 24;
+pub const ROWS: u16 = 24;
+
+/// `_IOW('t', 103, struct winsize)`, which `libc` spells out for every BSD except apple.
+const TIOCSWINSZ: libc::c_ulong = 0x8008_7467;
 
 pub fn exe() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
@@ -35,7 +38,21 @@ pub struct Pty {
 }
 
 impl Pty {
+    #[allow(
+        dead_code,
+        reason = "the tests that drive a plugin pane name its argv instead"
+    )]
     pub fn of(home: &Path, cwd: &Path, cols: u16) -> Pty {
+        Pty::running(&[], &[], home, cwd, cols)
+    }
+
+    /// The same terminal with something other than the popup on the far side: a plugin pane is this
+    /// binary under another argv, with what it is to work on handed to it in its environment.
+    #[allow(
+        dead_code,
+        reason = "only the tests that drive a plugin pane ask for one"
+    )]
+    pub fn running(argv: &[&str], env: &[(&str, &str)], home: &Path, cwd: &Path, cols: u16) -> Pty {
         let (mut master, mut slave) = (0, 0);
         let mut size = libc::winsize {
             ws_row: ROWS,
@@ -66,11 +83,13 @@ impl Pty {
 
         let terminal = unsafe { File::from_raw_fd(slave) };
         let child = Command::new(exe())
+            .args(argv)
             .current_dir(cwd)
             .env_clear()
             .env("HOME", home)
             .env("PATH", std::env::var("PATH").expect("PATH"))
             .env("TERM", "xterm-256color")
+            .envs(env.iter().copied())
             .stdin(Stdio::from(terminal.try_clone().expect("stdin")))
             .stdout(Stdio::from(terminal.try_clone().expect("stdout")))
             .stderr(Stdio::from(terminal.try_clone().expect("stderr")))
@@ -82,6 +101,25 @@ impl Pty {
             child: Some(child),
             screen: Screen::of(ROWS as usize, cols as usize),
         }
+    }
+
+    /// The pane made wider or narrower, as a window manager would: the size of the terminal changes
+    /// under whatever is drawing into it, and the screen read back is the new one.
+    #[allow(dead_code, reason = "only the tests about size ask for one")]
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_ne!(
+            unsafe { libc::ioctl(self.master.as_raw_fd(), TIOCSWINSZ, &size) },
+            -1,
+            "TIOCSWINSZ: {}",
+            std::io::Error::last_os_error()
+        );
+        self.screen = Screen::of(rows as usize, cols as usize);
     }
 
     pub fn press(&mut self, keys: &str) {
@@ -157,6 +195,10 @@ impl Drop for Pty {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "only the tests whose popup resolves a project need one"
+)]
 /// What Herdr's control socket would say. Only `session.snapshot` is ever asked for here — the popup
 /// resolves its project from it — and anything else is refused rather than guessed at.
 pub fn answer_snapshots(socket: PathBuf, cwd: PathBuf) {

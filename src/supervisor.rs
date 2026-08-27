@@ -6,18 +6,28 @@
 //!
 //! Because macOS orphans children rather than killing them, *daemon alive ⇔ stack alive* is upheld
 //! from both ends: `kill_all` on the way out, `kill_leftovers` on the way in.
+//!
+//! Restoring does not weaken that. A unit the last daemon was still running is *re-spawned* rather
+//! than reclaimed: the process that comes back is this daemon's own child, with an exit code this
+//! daemon can read, and the one that went is dead either way.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use crate::local::{self, Spec};
 use crate::store::{Identity, Record, Slot, Store};
+use crate::terminal::{self, Terminal};
 use crate::unit::{self, Exit, State, Status};
 
-/// §10: `SIGTERM` to the group, `SIGKILL` five seconds later.
+/// `SIGTERM` to the group, `SIGKILL` five seconds later.
 pub const GRACE: Duration = Duration::from_secs(5);
+
+/// How old a restore mark may be and still be acted on. Replacing the daemon to pick up a new build
+/// takes seconds; a machine booted the next morning must not bring back yesterday's stack unasked.
+pub const RESTORE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 /// `SIGKILL` cannot be ignored, so this is scheduling slack rather than a grace period.
 const REAP_WAIT: Duration = Duration::from_secs(2);
@@ -54,9 +64,10 @@ struct Live {
     started_at: SystemTime,
     /// Set before the group is signalled, so the reaping thread knows a `down` from a `dead`.
     stopping: bool,
+    /// A `tty` unit's terminal, for as long as the unit is there to type at.
+    terminal: Option<Arc<Terminal>>,
 }
 
-/// How far a halt had to go.
 enum Halt {
     NotRunning,
     Stopped,
@@ -67,6 +78,9 @@ pub struct Supervisor {
     store: Store,
     grace: Duration,
     live: Mutex<HashMap<Handle, Live>>,
+    /// What tells a reaping thread that the unit it is burying was wanted: on the way out every unit
+    /// is stopped, and only here does a stop mean something to put back.
+    shutting_down: AtomicBool,
 }
 
 impl Supervisor {
@@ -75,6 +89,7 @@ impl Supervisor {
             store: Store::at(root),
             grace,
             live: Mutex::new(HashMap::new()),
+            shutting_down: AtomicBool::new(false),
         })
     }
 
@@ -82,7 +97,7 @@ impl Supervisor {
         &self.store
     }
 
-    /// Ownership in §7's sense: a daemon with a unit running has something to be the parent of.
+    /// Ownership: a daemon with a unit running has something to be the parent of.
     pub fn busy(&self) -> bool {
         !self.live.lock().expect("live units").is_empty()
     }
@@ -115,7 +130,10 @@ impl Supervisor {
                 ps_start: spawned.ps_start.clone(),
                 cmd: spec.cmd.clone(),
                 cwd: spec.cwd.clone(),
+                env: spec.env.clone(),
+                tty: spec.tty,
                 exit: None,
+                restore: None,
             },
         )
         .map_err(|error| format!("{}: {error}", slot.record_path(&handle.unit).display()))?;
@@ -127,6 +145,7 @@ impl Supervisor {
                 pid: spawned.pid,
                 started_at: spawned.started_at,
                 stopping: false,
+                terminal: spawned.terminal,
             },
         );
         let supervisor = Arc::clone(self);
@@ -156,6 +175,20 @@ impl Supervisor {
             (Halt::Escalated, None) => Verdict::note(escalation(&spec.name, self.grace)),
             _ => verdict,
         })
+    }
+
+    /// The terminal of a running `tty` unit, or why there is none to type at. A row that cannot be
+    /// attached to has to say so where it stands rather than open a pane onto nothing.
+    pub fn terminal(&self, project: &Identity, name: &str) -> Result<Arc<Terminal>, String> {
+        let handle = self.handle(project, name);
+        let live = self.live.lock().expect("live units");
+        match live.get(&handle) {
+            None => Err(format!("{name} is not running")),
+            Some(unit) => unit
+                .terminal
+                .clone()
+                .ok_or_else(|| terminal::runs_on_a_pipe(name)),
+        }
     }
 
     /// Every unit this project has a record or a live entry for. Another project's units are its own
@@ -188,7 +221,7 @@ impl Supervisor {
         statuses
     }
 
-    /// §7, before anything else a daemon does: whatever its predecessor left running dies now. A
+    /// Before anything else a daemon does: whatever its predecessor left running dies now. A
     /// record's pid is only ever acted on when `ps` agrees it is still the same process.
     pub fn kill_leftovers(&self) -> Vec<String> {
         let mut killed = Vec::new();
@@ -214,9 +247,50 @@ impl Supervisor {
         killed
     }
 
+    /// Every unit the daemon before this one was still running, started again as a child of this one.
+    /// A record whose mark is stale, or that never carried a command, is left where it is.
+    pub fn restore(self: &Arc<Self>) -> Vec<String> {
+        let mut restored = Vec::new();
+        for slot in self.store.slots() {
+            let Some(project) = slot.identity() else {
+                continue;
+            };
+            for (unit, record) in slot.records() {
+                let Some(name) = unit::name_of(&unit, unit::LOCAL) else {
+                    continue;
+                };
+                let Some(left_at) = record.restore else {
+                    continue;
+                };
+                // Cleared before the attempt rather than after it, so a unit that cannot be started
+                // is not tried again by every daemon that follows.
+                let mut cleared = record.clone();
+                cleared.restore = None;
+                let _ = slot.write(&unit, &cleared);
+                if record.cmd.is_empty()
+                    || left_at.elapsed().unwrap_or(Duration::MAX) > RESTORE_WINDOW
+                {
+                    continue;
+                }
+                let spec = Spec {
+                    name: name.to_string(),
+                    cmd: record.cmd.clone(),
+                    cwd: record.cwd.clone(),
+                    env: record.env.clone(),
+                    tty: record.tty,
+                };
+                if self.start(&project, &spec).is_ok() {
+                    restored.push(format!("{}/{unit}", slot.key()));
+                }
+            }
+        }
+        restored
+    }
+
     /// Kill-on-exit. The invariant is worth more than the survival: killing the daemon is the
     /// deliberate stop-everything hatch.
     pub fn kill_all(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
         let running: Vec<(Handle, u32)> = {
             let mut live = self.live.lock().expect("live units");
             live.iter_mut()
@@ -340,6 +414,12 @@ impl Supervisor {
         record.started_at = None;
         record.ps_start = None;
         record.exit = status.ok().map(Exit::of);
+        // Stopped by hand or dead of its own accord, a unit is not something to put back; only the
+        // daemon going down under it leaves it still wanted.
+        record.restore = self
+            .shutting_down
+            .load(Ordering::SeqCst)
+            .then(SystemTime::now);
         let _ = slot.write(&handle.unit, &record);
         self.live.lock().expect("live units").remove(handle);
     }
@@ -352,12 +432,15 @@ fn escalation(name: &str, grace: Duration) -> String {
     )
 }
 
-/// A record for a unit that is not running: its exit status stays, its pid does not.
+/// A record for a unit that is not running: its exit status stays, its pid does not. Reaching here at
+/// all means the unit was running when its daemon stopped being there — signalled, killed outright or
+/// gone with the machine — so it is one to put back.
 fn forget(slot: &Slot, unit: &str, record: &Record) {
     if record.pid.is_none() && record.state != State::Up {
         return;
     }
     let mut record = record.clone();
+    record.restore = Some(SystemTime::now());
     record.state = State::Down;
     record.pid = None;
     record.started_at = None;
@@ -435,6 +518,7 @@ mod tests {
             cmd: cmd.iter().map(|word| word.to_string()).collect(),
             cwd: cwd.to_path_buf(),
             env: BTreeMap::new(),
+            tty: false,
         }
     }
 
@@ -454,7 +538,10 @@ mod tests {
                 ps_start: Some("Mon Aug 18 17:32:05 2026".into()),
                 cmd: vec!["bin/vite".into()],
                 cwd: project.path.clone(),
+                env: BTreeMap::new(),
+                tty: false,
                 exit: None,
+                restore: None,
             },
         )
         .expect("write");
@@ -616,6 +703,158 @@ mod tests {
         assert_eq!(record.pid, None);
         assert!(record.exit.is_some(), "a stop is still an exit");
         assert_eq!(supervisor.status(&project)[&key].state, State::Down);
+    }
+
+    fn restore_mark(
+        supervisor: &Arc<Supervisor>,
+        project: &Identity,
+        name: &str,
+    ) -> Option<SystemTime> {
+        supervisor
+            .store()
+            .slot(project)
+            .record(&unit::key(unit::LOCAL, name))
+            .expect("a record")
+            .restore
+    }
+
+    #[test]
+    fn only_a_unit_the_daemon_took_down_on_its_way_out_is_marked_to_be_put_back() {
+        let scratch = Scratch::new("marks");
+        let supervisor = scratch.supervisor(Duration::from_millis(200));
+        let project = scratch.project("storefront");
+
+        supervisor
+            .start(&project, &spec("kept", &["sleep", "20"], &project.path))
+            .expect("start");
+        supervisor
+            .start(
+                &project,
+                &spec("bystopped", &["sleep", "20"], &project.path),
+            )
+            .expect("start");
+        supervisor
+            .start(
+                &project,
+                &spec("crashed", &["sh", "-c", "exit 7"], &project.path),
+            )
+            .expect("start");
+
+        supervisor.stop(&project, "bystopped").expect("stop");
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while restore_mark(&supervisor, &project, "crashed").is_none()
+            && supervisor.busy()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(POLL);
+        }
+
+        supervisor.kill_all();
+
+        assert!(
+            restore_mark(&supervisor, &project, "kept").is_some(),
+            "a unit that was still running when the daemon went is not marked"
+        );
+        assert_eq!(
+            restore_mark(&supervisor, &project, "bystopped"),
+            None,
+            "a unit stopped by hand must not come back"
+        );
+        assert_eq!(
+            restore_mark(&supervisor, &project, "crashed"),
+            None,
+            "a unit that died of its own accord must not come back"
+        );
+    }
+
+    #[test]
+    fn the_next_daemon_starts_what_the_last_one_was_running_and_nothing_stale() {
+        let scratch = Scratch::new("restore");
+        let going = scratch.supervisor(Duration::from_millis(200));
+        let project = scratch.project("storefront");
+        let key = unit::key(unit::LOCAL, "sleeper");
+
+        going
+            .start(&project, &spec("sleeper", &["sleep", "20"], &project.path))
+            .expect("start");
+        let first = going
+            .store()
+            .slot(&project)
+            .record(&key)
+            .expect("record")
+            .pid;
+        going.kill_all();
+        assert!(!going.busy());
+
+        // A second unit whose mark is older than the window has no claim on the fresh daemon.
+        let stale_key = unit::key(unit::LOCAL, "yesterday");
+        let slot = going.store().slot(&project);
+        let mut stale = Record::stopped();
+        stale.cmd = vec!["sleep".into(), "20".into()];
+        stale.cwd = project.path.clone();
+        stale.restore = Some(SystemTime::now() - RESTORE_WINDOW - Duration::from_secs(60));
+        slot.write(&stale_key, &stale).expect("write");
+
+        let fresh = scratch.supervisor(Duration::from_millis(200));
+        let restored = fresh.restore();
+        assert_eq!(restored.len(), 1, "{restored:?}");
+        assert!(restored[0].ends_with(&key), "{restored:?}");
+
+        assert_eq!(fresh.status(&project)[&key].state, State::Up);
+        let second = fresh.store().slot(&project).record(&key).expect("record");
+        assert_ne!(
+            second.pid, first,
+            "the old process was reclaimed, not respawned"
+        );
+        assert_eq!(
+            second.restore, None,
+            "a restored unit still marked would be started again by every daemon after this one"
+        );
+        assert_eq!(fresh.status(&project)[&stale_key].state, State::Down);
+
+        fresh.kill_all();
+    }
+
+    /// The whole `Spec` comes back, not just the command: a unit that asked for a terminal is still on
+    /// one after the daemon that started it has gone.
+    #[test]
+    fn a_restored_unit_keeps_the_env_and_the_terminal_it_was_started_with() {
+        let scratch = Scratch::new("restore-tty");
+        let going = scratch.supervisor(Duration::from_millis(200));
+        let project = scratch.project("storefront");
+        let key = unit::key(unit::LOCAL, "console");
+
+        let mut console = spec(
+            "console",
+            &[
+                "sh",
+                "-c",
+                "echo where=$HD_WHERE; test -t 0 && echo on-a-terminal; sleep 20",
+            ],
+            &project.path,
+        );
+        console.env = BTreeMap::from([("HD_WHERE".to_string(), "from-the-manifest".to_string())]);
+        console.tty = true;
+        going.start(&project, &console).expect("start");
+        going.kill_all();
+
+        let fresh = scratch.supervisor(Duration::from_millis(200));
+        assert_eq!(fresh.restore().len(), 1);
+
+        let slot = fresh.store().slot(&project);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !std::fs::read_to_string(slot.log_path(&key))
+            .unwrap_or_default()
+            .contains("on-a-terminal")
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(POLL);
+        }
+        let log = std::fs::read_to_string(slot.log_path(&key)).unwrap_or_default();
+        assert!(log.contains("where=from-the-manifest"), "{log:?}");
+        assert!(log.contains("on-a-terminal"), "{log:?}");
+
+        fresh.kill_all();
     }
 
     #[test]

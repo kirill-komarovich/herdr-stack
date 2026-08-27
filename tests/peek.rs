@@ -1,7 +1,7 @@
 //! The log peek as a user meets it: the real binary, drawn into a pty of this test's own making, keys
 //! written into it and the screen read back with the escape sequences taken out.
 //!
-//! Nothing here can touch the state root §8 spells out, because `HOME` is a throwaway directory under
+//! Nothing here can touch the real state root, because `HOME` is a throwaway directory under
 //! the temporary one: both the state root and the herdr control socket the popup dials are derived from
 //! it, and the socket is answered by this file rather than by Herdr. The only processes signalled are
 //! the popup this test spawned and the daemon that popup started, and every test ends with both gone.
@@ -45,7 +45,7 @@ impl Stage {
         let home = root.join("home");
         std::fs::create_dir_all(home.join(".local/bin")).expect("a home");
         std::fs::create_dir_all(home.join(".config/herdr")).expect("a herdr config dir");
-        // §6 spawns through mise at a spelled-out path under HOME, and this HOME is not the real one.
+        // A unit spawns through mise at a spelled-out path under HOME, and this HOME is not the real one.
         std::os::unix::fs::symlink(local::mise_path(), home.join(".local/bin/mise")).expect("mise");
         // Docker Desktop installs its cli-plugins under HOME, so `docker compose` is not a subcommand
         // any more once HOME moves. Only the plugins are borrowed, never the real docker config.
@@ -88,7 +88,7 @@ impl Stage {
         Target::of(&self.project, unit::LOCAL, name).expect("the manifest declares the unit")
     }
 
-    /// A compose project of the popup's own, found by §11's default file discovery.
+    /// A compose project of the popup's own, found by compose's default file discovery.
     fn compose(&mut self, service: &str) {
         std::fs::write(
             self.project.root.join("docker-compose.yml"),
@@ -118,7 +118,7 @@ impl Stage {
 }
 
 /// The popup goes first — it owns nothing — then the daemon it started, whose exit takes every unit
-/// with it (§7).
+/// with it.
 impl Drop for Stage {
     fn drop(&mut self) {
         self.pty.close();
@@ -166,8 +166,7 @@ fn a_peek_restarted_under_it_shows_the_fresh_generation_instead_of_the_end_of_th
     stage.pty.wait_for("gen1 line 3");
     assert!(stage.pty.wait_for("following").contains("f follow"));
 
-    // The restart goes through the daemon while the peek is open, which is exactly the case §12 says a
-    // peek must survive: the log is rotated aside and created anew under the follower.
+    // The restart goes through the daemon while the peek is open, which a peek must survive: the log is rotated aside and created anew under the follower.
     stage.generation("2");
     let mut link = stage.link();
     link.restart(&stage.project, &stage.unit("counter"))

@@ -21,6 +21,10 @@ use crate::manifest::{DockerService, LocalUnit, Project};
 use crate::unit::{self, Status};
 use crate::{daemon, state, supervisor};
 
+/// Once a connection has become a unit's terminal there is no round trip left to time out, and an
+/// idle prompt is the normal case rather than a stall.
+const NO_TIMEOUT: Option<Duration> = None;
+
 /// A stop is allowed to take the whole `SIGTERM` grace and the reap after the `SIGKILL` that follows
 /// it, so the patience for a reply is the daemon's worst case rather than a round-trip guess.
 const REQUEST_TIMEOUT: Duration = supervisor::GRACE.saturating_add(Duration::from_secs(10));
@@ -34,7 +38,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// The one endpoint that exists in production: the state root spelled out in §8.
+    /// The one endpoint that exists in production: the spelled-out state root.
     pub fn spelled_out() -> Endpoint {
         Endpoint {
             root: state::root(),
@@ -93,7 +97,6 @@ impl Endpoint {
             .map_err(|error| format!("cannot start a daemon: {error}"))
     }
 
-    /// Connects to a daemon that is already running, waiting up to `patience` for one to appear.
     pub fn connect_within(&self, patience: Duration) -> Result<Link, String> {
         let deadline = Instant::now() + patience;
         loop {
@@ -162,7 +165,6 @@ enum Failure {
     Refused(String),
 }
 
-/// What the daemon said it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
     pub version: String,
@@ -190,7 +192,6 @@ impl Peer {
     }
 }
 
-/// The connection itself, held open for the popup's whole life.
 #[derive(Debug)]
 struct Wire {
     stream: UnixStream,
@@ -256,6 +257,15 @@ impl Wire {
     }
 }
 
+/// A connection that has stopped being a conversation: raw bytes both ways, and nothing between them
+/// to parse. Reading is the reader the reply was read through, buffer and all — the daemon starts
+/// relaying the moment it has answered, so the first of the unit's output can already be sitting in it.
+#[derive(Debug)]
+pub struct Attached {
+    pub reading: BufReader<UnixStream>,
+    pub writing: UnixStream,
+}
+
 #[derive(Debug)]
 pub struct Link {
     wire: Wire,
@@ -319,6 +329,45 @@ impl Link {
             .map(str::to_string))
     }
 
+    /// Hands this connection over to the unit's terminal: what the daemon writes from here on is what
+    /// the unit wrote, byte for byte.
+    pub fn attach(mut self, root: &Path, unit: &str) -> Result<Attached, String> {
+        self.request(
+            "attach",
+            json!({"project": at(root), "unit": {"name": unit}}),
+        )?;
+        let Wire { stream, reader, .. } = self.wire;
+        for clock in [
+            stream.set_read_timeout(NO_TIMEOUT),
+            stream.set_write_timeout(NO_TIMEOUT),
+        ] {
+            clock.map_err(|error| format!("daemon socket: {error}"))?;
+        }
+        let writing = stream
+            .try_clone()
+            .map_err(|error| format!("daemon socket: {error}"))?;
+        Ok(Attached {
+            reading: reader,
+            writing,
+        })
+    }
+
+    /// How much room the unit has to draw in. The last pane to say wins, and a pane that has just
+    /// opened says so before it attaches, so the program's first draw is for the pane it is in.
+    pub fn resize(
+        &mut self,
+        root: &Path,
+        unit: &str,
+        rows: u16,
+        columns: u16,
+    ) -> Result<(), String> {
+        self.request(
+            "resize",
+            json!({"project": at(root), "unit": {"name": unit}, "rows": rows, "columns": columns}),
+        )
+        .map(|_| ())
+    }
+
     /// Keyed by unit key, so a local and a docker unit of one name stay apart.
     pub fn status(&mut self, project: &Project) -> Result<BTreeMap<String, Status>, String> {
         let params = json!({"project": describe(project), "docker": declared(project)});
@@ -355,6 +404,12 @@ fn describe(project: &Project) -> Value {
     json!({"path": project.root.to_string_lossy(), "name": project.name})
 }
 
+/// A project the caller knows only the root of. The daemon keys a project by its path alone, so a pane
+/// handed one at open time needs no manifest to reach the units under it.
+fn at(root: &Path) -> Value {
+    json!({"path": root.to_string_lossy()})
+}
+
 /// The daemon is told what to run and nothing about manifests, so a unit crosses the wire whole. The
 /// env here is the manifest's layers only: the process layer under it is the daemon's own. A service
 /// carries its `one_shot` because that is what decides whether a start waits for readiness.
@@ -366,6 +421,7 @@ fn spell(target: &Target) -> Value {
             "cmd": unit.cmd,
             "cwd": unit.cwd.to_string_lossy(),
             "env": unit.env,
+            "tty": unit.tty,
         }),
         Target::Docker(service) => json!({
             "kind": unit::DOCKER,

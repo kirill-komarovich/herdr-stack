@@ -1,4 +1,4 @@
-//! The spawn recipe of §6 and the group signals of §10, and nothing about who called for them.
+//! The spawn recipe and the group signals, and nothing about who called for them.
 //!
 //! Three parts of the spawn are load-bearing and none of them is optional: `mise exec --` with cwd
 //! set, so the toolchain and every port come from the repo's own mise files rather than the manifest;
@@ -6,15 +6,21 @@
 //! is measurably not enough, it is the shared session that kills; and stdio pointed at a log with
 //! stdin from `/dev/null`, so a dev server never wedges a Herdr pipe or takes SIGPIPE from a dying
 //! server.
+//!
+//! A `tty` unit swaps the last of those three for a terminal of its own and keeps the other two: the
+//! session is now the terminal's, so it is still nobody else's, and the log is fed from the master end
+//! rather than written to directly. Everything downstream of the log is unchanged by the swap.
 
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::herdr::expand_tilde;
+use crate::terminal::{self, Terminal};
 
 /// Spelled out for the same reason the state root is: a popup inherits no `PATH` worth trusting.
 pub const MISE: &str = "~/.local/bin/mise";
@@ -22,17 +28,22 @@ pub const MISE: &str = "~/.local/bin/mise";
 /// A missing toolchain must fail fast into the log rather than hang on a silent download.
 const NO_AUTO_INSTALL: (&str, &str) = ("MISE_EXEC_AUTO_INSTALL", "false");
 
-/// What the daemon was told to run. The env here is the manifest's two layers only; the process layer
-/// under it is the daemon's own, added at spawn.
+/// A unit's env is cleared and rebuilt at spawn, so the terminal type of a `tty` unit is decided here
+/// rather than inherited from whatever happened to start the daemon. A manifest may still say
+/// otherwise: this sits under its `env` rather than over it.
+const TERM: (&str, &str) = ("TERM", "xterm-256color");
+
+/// The env here is the manifest's two layers only; the process layer under it is the daemon's own,
+/// added at spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub name: String,
     pub cmd: Vec<String>,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
+    pub tty: bool,
 }
 
-/// A unit the daemon has just become the parent of.
 #[derive(Debug)]
 pub struct Spawned {
     pub child: Child,
@@ -40,6 +51,7 @@ pub struct Spawned {
     /// The moment of the fork, at full resolution — not `ps -o lstart=`'s one second.
     pub started_at: SystemTime,
     pub ps_start: Option<String>,
+    pub terminal: Option<Arc<Terminal>>,
 }
 
 pub fn mise_path() -> PathBuf {
@@ -57,38 +69,66 @@ where
     command.current_dir(&spec.cwd);
     command.env_clear();
     command.envs(base);
+    if spec.tty {
+        command.env(TERM.0, TERM.1);
+    }
     command.envs(&spec.env);
     command.env(NO_AUTO_INSTALL.0, NO_AUTO_INSTALL.1);
     command
 }
 
-/// `log` becomes both stdout and stderr; the caller owns its rotation.
+/// The caller owns the log's rotation. A `tty` unit never writes to `log` itself; the thread reading
+/// its terminal does.
 pub fn spawn(spec: &Spec, log: File) -> std::io::Result<Spawned> {
-    let errors = log.try_clone()?;
     let mut command = command(spec, &mise_path(), std::env::vars());
+    command.stdin(Stdio::null());
+    let pty = match spec.tty {
+        false => {
+            on_pipes(&mut command, &log)?;
+            None
+        }
+        // `login_tty(3)` puts the child in a session of its own as `setsid(2)` would, and the terminal
+        // it takes over is that session's rather than anyone else's.
+        true => {
+            let pair = terminal::open()?;
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+            unsafe { command.pre_exec(terminal::take_over(&pair.slave)) };
+            Some(pair)
+        }
+    };
+
+    let started_at = SystemTime::now();
+    let child = command.spawn()?;
+    let pid = child.id();
+    // The child holds its own copy now, and ours would keep the master from ever reading the end.
+    let terminal = pty.map(|pair| {
+        drop(pair.slave);
+        terminal::pump(Arc::clone(&pair.terminal), log);
+        pair.terminal
+    });
+    Ok(Spawned {
+        child,
+        pid,
+        started_at,
+        ps_start: ps_field(pid, "lstart"),
+        terminal,
+    })
+}
+
+/// `setsid(2)` leaves the child leading a new session *and* a new process group, which is what a group
+/// signal later needs. `Command::process_group(0)` would make it a group leader first and then
+/// `setsid` returns EPERM — measured — so the two cannot be combined.
+fn on_pipes(command: &mut Command, log: &File) -> std::io::Result<()> {
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(errors));
-    // `setsid(2)` leaves the child leading a new session *and* a new process group, which is what a
-    // group signal later needs. `Command::process_group(0)` would make it a group leader first and
-    // then `setsid` returns EPERM — measured — so the two cannot be combined.
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log.try_clone()?));
     unsafe {
         command.pre_exec(|| match libc::setsid() {
             -1 => Err(std::io::Error::last_os_error()),
             _ => Ok(()),
         });
     }
-
-    let started_at = SystemTime::now();
-    let child = command.spawn()?;
-    let pid = child.id();
-    Ok(Spawned {
-        child,
-        pid,
-        started_at,
-        ps_start: ps_field(pid, "lstart"),
-    })
+    Ok(())
 }
 
 pub fn term_group(pid: u32) -> std::io::Result<()> {
@@ -99,8 +139,8 @@ pub fn kill_group(pid: u32) -> std::io::Result<()> {
     signal_group(pid, libc::SIGKILL)
 }
 
-/// The whole group, never the leader alone: measured, `TERM` to a `bin/vite dev` wrapper killed the
-/// wrapper and left both its children running, orphaned.
+/// Measured: `TERM` to a `bin/vite dev` wrapper killed the wrapper and left both its children
+/// running, orphaned.
 fn signal_group(pid: u32, signal: i32) -> std::io::Result<()> {
     match unsafe { libc::killpg(pid as i32, signal) } {
         -1 => Err(std::io::Error::last_os_error()),
@@ -116,7 +156,7 @@ pub fn alive(pid: u32) -> bool {
     }
 }
 
-/// Whether the pid a record names is still the process that record was written for. §9's one surviving
+/// Whether the pid a record names is still the process that record was written for. The one surviving
 /// role for `ps`: telling a leftover from a reused pid, so it can be killed. Never to adopt, never for
 /// display.
 pub fn still_running(pid: u32, ps_start: Option<&str>) -> bool {
@@ -139,9 +179,9 @@ fn leads_its_group(pid: u32) -> bool {
         .is_some_and(|group| group == pid)
 }
 
-/// Whether anything is left in the unit's process group. Stopping is not done when the wrapper is
-/// reaped — it is done when the tree it forked is gone, which is the whole hazard the group signal
-/// exists for. macOS documents its own `ps -g` as ignored, so the whole table is the only way to ask.
+/// Stopping is not done when the wrapper is reaped — it is done when the tree it forked is gone, which
+/// is the whole hazard the group signal exists for. macOS documents its own `ps -g` as ignored, so the
+/// whole table is the only way to ask.
 pub fn group_empty(pgid: u32) -> bool {
     let Ok(output) = Command::new("/bin/ps")
         .arg("-ax")
@@ -184,6 +224,7 @@ mod tests {
             cmd: vec!["bin/vite".into(), "dev".into()],
             cwd: PathBuf::from("/repos/storefront"),
             env: BTreeMap::from([("VITE_RUBY_HOST".to_string(), "127.0.0.1".to_string())]),
+            tty: false,
         }
     }
 
@@ -204,6 +245,38 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()));
         command(&spec(), Path::new("/opt/mise"), base)
+    }
+
+    fn built_on_a_terminal(base: &[(&str, &str)], env: &[(&str, &str)]) -> Command {
+        let mut spec = spec();
+        spec.tty = true;
+        spec.env = env
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        let base = base
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()));
+        command(&spec, Path::new("/opt/mise"), base)
+    }
+
+    #[test]
+    fn a_tty_unit_is_told_what_terminal_it_is_on_rather_than_inheriting_one() {
+        let env = env_of(&built_on_a_terminal(&[("TERM", "dumb")], &[]));
+        assert_eq!(env.get("TERM").map(String::as_str), Some("xterm-256color"));
+        // A unit on pipes has no terminal to name, so nothing is decided for it.
+        assert_eq!(
+            env_of(&built(&[("TERM", "dumb")]))
+                .get("TERM")
+                .map(String::as_str),
+            Some("dumb")
+        );
+    }
+
+    #[test]
+    fn a_manifest_that_names_a_terminal_type_itself_is_not_overruled() {
+        let env = env_of(&built_on_a_terminal(&[], &[("TERM", "xterm")]));
+        assert_eq!(env.get("TERM").map(String::as_str), Some("xterm"));
     }
 
     #[test]

@@ -1,14 +1,8 @@
-//! The five hand-written manifests in `example-manifests/` are the fixtures. They are read from
-//! where they live rather than copied in, so a fixture and its copy can never drift apart.
-
 use std::path::{Path, PathBuf};
 
 use herdr_dev::manifest::Project;
 
-const DIR: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/manifests"
-);
+const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifests");
 
 fn load(project: &str) -> Project {
     let path = PathBuf::from(DIR).join(format!("{project}.herdr-dev.toml"));

@@ -1,3 +1,4 @@
+use herdr_dev::attach;
 use herdr_dev::daemon;
 use herdr_dev::mode::{self, Mode, USAGE};
 use herdr_dev::tail;
@@ -28,6 +29,12 @@ fn main() {
         }
         Mode::Tail => {
             if let Err(error) = tail::run() {
+                eprintln!("herdr-dev: {error}");
+                std::process::exit(1);
+            }
+        }
+        Mode::Attach => {
+            if let Err(error) = attach::run() {
                 eprintln!("herdr-dev: {error}");
                 std::process::exit(1);
             }

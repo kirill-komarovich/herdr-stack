@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item};
 
 const TOP_LEVEL_KEYS: [&str; 4] = ["env", "local", "docker", "includes"];
-const LOCAL_KEYS: [&str; 3] = ["cmd", "cwd", "env"];
+const LOCAL_KEYS: [&str; 4] = ["cmd", "cwd", "env", "tty"];
 const DOCKER_KEYS: [&str; 4] = ["names", "one_shot", "hidden", "notes"];
 const INCLUDE_KEYS: [&str; 1] = ["path"];
 
@@ -33,6 +33,9 @@ pub struct LocalUnit {
     pub cmd: Vec<String>,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
+    /// A controlling terminal of its own instead of a pipe, for a unit that saves its interactive
+    /// behaviour — a prompt raised mid-request, a pager, colour — for one.
+    pub tty: bool,
     pub problem: Option<String>,
 }
 
@@ -234,11 +237,12 @@ fn local_unit(
     root: &Path,
 ) -> LocalUnit {
     match local_fields(name, item, root) {
-        Ok((cmd, cwd, env)) => LocalUnit {
+        Ok(Fields { cmd, cwd, env, tty }) => LocalUnit {
             name: name.to_string(),
             cmd,
             cwd: cwd.unwrap_or_else(|| root.to_path_buf()),
             env: layered(top_level_env, env),
+            tty,
             problem: None,
         },
         Err(problem) => LocalUnit {
@@ -246,14 +250,20 @@ fn local_unit(
             cmd: Vec::new(),
             cwd: root.to_path_buf(),
             env: top_level_env.clone(),
+            tty: false,
             problem: Some(problem),
         },
     }
 }
 
-type LocalFields = (Vec<String>, Option<PathBuf>, BTreeMap<String, String>);
+struct Fields {
+    cmd: Vec<String>,
+    cwd: Option<PathBuf>,
+    env: BTreeMap<String, String>,
+    tty: bool,
+}
 
-fn local_fields(name: &str, item: &Item, root: &Path) -> Result<LocalFields, String> {
+fn local_fields(name: &str, item: &Item, root: &Path) -> Result<Fields, String> {
     let table = item
         .as_table_like()
         .ok_or_else(|| format!("[local.{name}] must be a table, found {}", item.type_name()))?;
@@ -293,7 +303,17 @@ fn local_fields(name: &str, item: &Item, root: &Path) -> Result<LocalFields, Str
         Some(item) => string_table(item, &format!("local.{name}.env"))?,
     };
 
-    Ok((cmd, cwd, env))
+    let tty = match table.get("tty") {
+        None => false,
+        Some(item) => item.as_bool().ok_or_else(|| {
+            format!(
+                "[local.{name}] `tty` must be a boolean, found {}",
+                item.type_name()
+            )
+        })?,
+    };
+
+    Ok(Fields { cmd, cwd, env, tty })
 }
 
 fn docker_services(item: &Item, problems: &mut Vec<String>) -> Result<Vec<DockerService>, String> {
@@ -479,8 +499,8 @@ fn resolve_path(raw: &str, root: &Path) -> PathBuf {
     }
 }
 
-/// Lexical only: `.` and `..` are folded away and nothing is asked of the filesystem. §8 keys a
-/// project by its path as written, so `~/acme/storefront/../accounts` has to key like the plain
+/// Lexical only: `.` and `..` are folded away and nothing is asked of the filesystem. A project is
+/// keyed by its path as written, so `~/acme/storefront/../accounts` has to key like the plain
 /// spelling of the same repo — while a symlink and its target stay two projects, exactly as two
 /// checkouts of one repo already are.
 fn normalize(path: PathBuf) -> PathBuf {

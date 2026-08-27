@@ -1,4 +1,5 @@
-//! The docker half of §9: what `compose ps --all` reports, and the three commands that change it.
+//! The docker half of the unit state model: what `compose ps --all` reports, and the three commands
+//! that change it.
 //!
 //! Nothing here is owned. A compose service outlives the daemon, so every read goes to docker and no
 //! record is ever consulted to decide whether a service is running — the records hold a display cache
@@ -25,8 +26,8 @@ pub const DOCKER: &str = "/usr/local/bin/docker";
 
 /// How long `--wait` may hold a start. Measured: a service whose healthcheck is still inside its
 /// `start_period` held `up -d --wait` for 2m05s, which would wedge the daemon and outlast the
-/// client's patience. §11 already allows a start to return with the service not yet up, so the wait
-/// is bounded and `compose ps` says how it went.
+/// client's patience. A start is allowed to return with the service not yet up, so the wait is
+/// bounded and `compose ps` says how it went.
 const WAIT: Duration = Duration::from_secs(10);
 
 const RUNNING: &str = "running";
@@ -35,13 +36,11 @@ const HEALTHY: &str = "healthy";
 const STARTING: &str = "starting";
 const UNHEALTHY: &str = "unhealthy";
 
-/// How many lines of a container's history a peek opens with.
-const LOG_TAIL: &str = "500";
+const LOG_TAIL_LINES: &str = "500";
 
 /// As long a reason as a note column can carry before it is more noise than help.
 const REASON_WIDTH: usize = 60;
 
-/// A compose service this project may act on, as the manifest declares it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
@@ -101,7 +100,7 @@ pub fn parse(text: &str) -> Vec<Container> {
         .collect()
 }
 
-/// §11: default file discovery only. Never `-f`, because the repos hold compose files
+/// Default file discovery only. Never `-f`, because the repos hold compose files
 /// — `-services.yml`, `-ci.yml`, `.jmeter.yml` — that are no part of the dev flow.
 fn compose(root: &Path) -> Command {
     let mut command = Command::new(DOCKER);
@@ -121,8 +120,7 @@ pub fn ps_command(root: &Path) -> Command {
 pub fn up_command(root: &Path, service: &Service) -> Command {
     let mut command = compose(root);
     command.args(["up", "-d"]);
-    // §11: an exit-0 service in the waited set makes `--wait` return exit 1 *and* abandon the wait
-    // early, so a one-shot is excluded rather than forgiven.
+    // An exit-0 service in the waited set makes `--wait` return exit 1 *and* abandon the wait early, so a one-shot is excluded rather than forgiven.
     if !service.one_shot {
         command
             .arg("--wait")
@@ -140,8 +138,8 @@ pub fn stop_command(root: &Path, service: &Service) -> Command {
     command
 }
 
-/// §12's peek of a compose service: streamed rather than polled, because a poll would refork the CLI
-/// several times a second and re-read lines it has already shown. Colour is off at the source, and
+/// Streamed rather than polled, because a poll would refork the CLI several times a second and
+/// re-read lines it has already shown. Colour is off at the source, and
 /// `--tail` keeps a container that has been up for a week from arriving as a wall of history.
 pub fn logs_command(root: &Path, service: &str) -> Command {
     let mut command = compose(root);
@@ -151,7 +149,7 @@ pub fn logs_command(root: &Path, service: &str) -> Command {
         "--no-log-prefix",
         "--follow",
         "--tail",
-        LOG_TAIL,
+        LOG_TAIL_LINES,
         service,
     ]);
     command
@@ -174,13 +172,12 @@ pub fn stop(root: &Path, service: &Service) -> Result<Verdict, String> {
     run(stop_command(root, service), &service.name)
 }
 
-/// §10: the same command as start, so there is one code path and a changed compose file takes
-/// effect. `compose restart` was rejected for silently reusing a stale container.
+/// The same command as start, so there is one code path and a changed compose file takes effect. `compose restart` was rejected for silently reusing a stale container.
 pub fn restart(root: &Path, service: &Service) -> Result<Verdict, String> {
     start(root, service)
 }
 
-/// Every declared service, keyed by unit key. Docker is read once for the whole list.
+/// Docker is read once for the whole list.
 pub fn statuses(
     store: &Store,
     project: &Identity,
@@ -189,7 +186,7 @@ pub fn statuses(
     if services.is_empty() {
         return BTreeMap::new();
     }
-    // A project whose rows are docker-only still needs its identity on disk, or §8's cleanup rule
+    // A project whose rows are docker-only still needs its identity on disk, or the cleanup rule
     // has nothing to read and the directory outlives the repo.
     let slot = store.open(project).unwrap_or_else(|_| store.slot(project));
 
@@ -232,7 +229,7 @@ pub fn statuses(
         .collect()
 }
 
-/// §9's mapping, whole. No observation yields `dead`: `compose stop` exits **137**, indistinguishable
+/// No observation yields `dead`: `compose stop` exits **137**, indistinguishable
 /// from a kill or an OOM, so "you stopped it" and "it fell over" are one state.
 pub fn observed_status(container: Option<&Container>, one_shot: bool) -> Status {
     let Some(container) = container else {
@@ -328,7 +325,7 @@ pub fn ps(root: &Path) -> Result<Vec<Container>, String> {
     Ok(parse(&String::from_utf8_lossy(&output.stdout)))
 }
 
-/// §9: uptime from the container's start time. Never `RunningFor`, which measures from *creation* —
+/// Uptime from the container's start time. Never `RunningFor`, which measures from *creation* —
 /// a db reporting "2 weeks ago" while up 24 hours.
 fn started_at(names: &[&str]) -> BTreeMap<String, SystemTime> {
     if names.is_empty() {
@@ -389,7 +386,7 @@ fn run(mut command: Command, service: &str) -> Result<Verdict, String> {
     let output = command
         .output()
         .map_err(|error| format!("{DOCKER}: {error}"))?;
-    // §11: `--wait`'s exit code is never the source of truth — an already-unhealthy service that is
+    // `--wait`'s exit code is never the source of truth — an already-unhealthy service that is
     // plainly running exits 1 — so a refusal is a note on the row, and `compose ps` decides the state.
     if output.status.success() {
         return Ok(Verdict::done());
@@ -638,7 +635,7 @@ mod tests {
                 "--no-log-prefix",
                 "--follow",
                 "--tail",
-                LOG_TAIL,
+                LOG_TAIL_LINES,
                 "db"
             ]
         );

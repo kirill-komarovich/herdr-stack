@@ -149,6 +149,53 @@ fn an_unknown_local_key_breaks_only_that_unit() {
 }
 
 #[test]
+fn a_unit_runs_on_a_terminal_only_where_it_asks_to() {
+    let project = accepted(
+        r#"
+        [local.rails]
+        cmd = ["bin/rails", "s"]
+        tty = true
+
+        [local.vite]
+        cmd = ["bin/vite", "dev"]
+
+        [local.sidekiq]
+        cmd = ["bundle", "exec", "sidekiq"]
+        tty = false
+        "#,
+    );
+    assert!(project.local[0].tty);
+    assert!(
+        !project.local[1].tty,
+        "a unit that never asked for one must not get one"
+    );
+    assert!(!project.local[2].tty);
+    assert!(project.local.iter().all(|unit| !unit.is_broken()));
+}
+
+#[test]
+fn a_tty_that_is_not_a_boolean_breaks_only_its_own_unit() {
+    let project = accepted(
+        r#"
+        [local.rails]
+        cmd = ["bin/rails", "s"]
+        tty = "yes"
+
+        [local.vite]
+        cmd = ["bin/vite", "dev"]
+        "#,
+    );
+    let problem = project.local[0].problem.clone().unwrap();
+    assert!(problem.contains("`tty` must be a boolean"), "{problem}");
+    assert!(problem.contains("[local.rails]"), "{problem}");
+    assert!(
+        !project.local[0].tty,
+        "a unit the reader refused must not run on a terminal"
+    );
+    assert!(!project.local[1].is_broken());
+}
+
+#[test]
 fn a_name_may_be_both_one_shot_and_hidden() {
     let project = accepted(
         r#"

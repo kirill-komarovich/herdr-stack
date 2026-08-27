@@ -2,7 +2,7 @@
 //! the other pty tests ask for, and 90% of a narrow window is where a sentence-length notice used to be
 //! cut off mid-word — so everything here is drawn at 80 and 100 columns.
 //!
-//! No daemon is started and no docker is touched: the socket §8 spells out is answered by this file, out
+//! No daemon is started and no docker is touched: the spelled-out socket is answered by this file, out
 //! of a `HOME` of its own under `/tmp`, so the only process any test here signals is the popup it
 //! spawned. The pid the fake daemon claims is never signalled by anything — it is a string in a banner.
 
@@ -255,7 +255,7 @@ fn the_row_list_keeps_its_last_row_until_a_notice_needs_one() {
     );
 }
 
-/// §5: a manifest is rendered anyway and says what it could not make sense of — the focused project's
+/// A manifest is rendered anyway and says what it could not make sense of — the focused project's
 /// complaints from the start, and an included repo's once it is unfolded.
 #[test]
 fn a_manifests_own_complaints_are_said_in_the_footer() {

@@ -10,3 +10,11 @@ id = "tail"
 title = "dev-stack log"
 placement = "overlay"
 command = ["./target/release/herdr-dev", "tail"]
+
+# The unit to type at arrives as HERDR_DEV_PROJECT and HERDR_DEV_UNIT at open time, for the same
+# reason: one entrypoint serves every unit.
+[[panes]]
+id = "attach"
+title = "dev-stack attach"
+placement = "overlay"
+command = ["./target/release/herdr-dev", "attach"]

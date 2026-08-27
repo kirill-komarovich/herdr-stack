@@ -1,4 +1,4 @@
-//! State and log storage, §8: one directory per project, one TOML record and one log per unit.
+//! State and log storage: one directory per project, one TOML record and one log per unit.
 //!
 //! Every write goes down as `.tmp` and is then `rename()`d, because `popup.close` can kill the TUI —
 //! and the daemon with the last client — with no warning, so nothing may be buffered for exit.
@@ -77,7 +77,6 @@ impl Store {
         }
     }
 
-    /// Creates the project's directories, its `project.toml` and the log symlink.
     pub fn open(&self, identity: &Identity) -> std::io::Result<Slot> {
         let slot = self.slot(identity);
         std::fs::create_dir_all(slot.dir.join(UNITS))?;
@@ -92,7 +91,6 @@ impl Store {
         Ok(slot)
     }
 
-    /// The slot a project key names, whether or not it exists yet.
     pub fn slot_at(&self, key: &str) -> Slot {
         Slot {
             dir: self.root.join(PROJECTS).join(key),
@@ -113,7 +111,7 @@ impl Store {
         slots
     }
 
-    /// §8's one cleanup rule: a project directory whose recorded path is gone. No TTL, and a project
+    /// The one cleanup rule: a project directory whose recorded path is gone. No TTL, and a project
     /// whose `project.toml` cannot be read is left alone rather than guessed about.
     pub fn drop_vanished(&self) -> Vec<PathBuf> {
         let mut dropped = Vec::new();
@@ -129,7 +127,6 @@ impl Store {
     }
 }
 
-/// One project's corner of the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slot {
     dir: PathBuf,
@@ -173,7 +170,6 @@ impl Slot {
         replace(&self.record_path(unit), record.to_toml().as_bytes())
     }
 
-    /// Every unit this project has a record for, keyed by unit key.
     pub fn records(&self) -> BTreeMap<String, Record> {
         let mut records = BTreeMap::new();
         let Ok(entries) = std::fs::read_dir(self.dir.join(UNITS)) else {
@@ -245,7 +241,6 @@ impl Slot {
     }
 }
 
-/// What the daemon knew about a local unit when it last wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub state: State,
@@ -255,7 +250,13 @@ pub struct Record {
     pub ps_start: Option<String>,
     pub cmd: Vec<String>,
     pub cwd: PathBuf,
+    pub env: BTreeMap<String, String>,
+    pub tty: bool,
     pub exit: Option<Exit>,
+    /// When the unit's daemon let go of it while it was still running, which is the whole of what the
+    /// next daemon needs to know to put the stack back. An explicit stop and a crash both clear it:
+    /// neither is something to restore.
+    pub restore: Option<SystemTime>,
 }
 
 impl Record {
@@ -267,7 +268,10 @@ impl Record {
             ps_start: None,
             cmd: Vec::new(),
             cwd: PathBuf::new(),
+            env: BTreeMap::new(),
+            tty: false,
             exit: None,
+            restore: None,
         }
     }
 
@@ -297,6 +301,19 @@ impl Record {
         }
         if !self.cwd.as_os_str().is_empty() {
             doc["cwd"] = value(self.cwd.to_string_lossy().as_ref());
+        }
+        if !self.env.is_empty() {
+            let mut env = toml_edit::InlineTable::new();
+            for (key, set_to) in &self.env {
+                env.insert(key, TomlValue::from(set_to.as_str()));
+            }
+            doc["env"] = Item::Value(TomlValue::InlineTable(env));
+        }
+        if self.tty {
+            doc["tty"] = value(true);
+        }
+        if let Some(restore) = self.restore {
+            doc["restore"] = value(epoch(restore));
         }
         match self.exit {
             Some(Exit::Code(code)) => doc["exit_code"] = value(code as i64),
@@ -348,12 +365,29 @@ impl Record {
                 .and_then(Item::as_str)
                 .map(PathBuf::from)
                 .unwrap_or_default(),
+            env: doc
+                .get("env")
+                .and_then(Item::as_table_like)
+                .map(|table| {
+                    table
+                        .iter()
+                        .filter_map(|(key, set_to)| {
+                            Some((key.to_string(), set_to.as_str()?.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            tty: doc.get("tty").and_then(Item::as_bool).unwrap_or_default(),
             exit,
+            restore: doc
+                .get("restore")
+                .and_then(Item::as_float)
+                .map(|seconds| UNIX_EPOCH + Duration::from_secs_f64(seconds)),
         })
     }
 }
 
-/// §8's docker record: the timestamped `compose ps` result last seen, and nothing else. It paints a
+/// The docker record: the timestamped `compose ps` result last seen, and nothing else. It paints a
 /// row fast and gives the row something to show — marked stale, never pretended live — when docker
 /// cannot be reached. It is never consulted to decide whether a service is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,7 +510,10 @@ mod tests {
             ps_start: Some("Mon Aug 18 17:32:05 2026".into()),
             cmd: vec!["bin/vite".into(), "dev".into()],
             cwd: PathBuf::from("/repos/storefront"),
+            env: BTreeMap::from([("VITE_RUBY_HOST".to_string(), "127.0.0.1".to_string())]),
+            tty: false,
             exit: None,
+            restore: None,
         }
     }
 
@@ -528,6 +565,45 @@ mod tests {
             "a temporary file was left in the units directory"
         );
         assert_eq!(slot.records().keys().collect::<Vec<_>>(), vec![&key]);
+    }
+
+    /// Everything a re-spawn needs, which is the whole `Spec` and not just the command.
+    #[test]
+    fn what_a_unit_would_have_to_be_started_again_with_survives_the_round_trip() {
+        let scratch = Scratch::new("respawn");
+        let store = scratch.store();
+        let slot = store.open(&scratch.project("storefront")).expect("slot");
+        let key = unit::key(unit::LOCAL, "console");
+
+        let left_at = SystemTime::now() - Duration::from_secs(90);
+        let mut record = running(4242);
+        record.tty = true;
+        record.restore = Some(left_at);
+        slot.write(&key, &record).expect("write");
+
+        let read = slot.record(&key).expect("record");
+        assert_eq!(read.cwd, PathBuf::from("/repos/storefront"));
+        assert_eq!(
+            read.env.get("VITE_RUBY_HOST").map(String::as_str),
+            Some("127.0.0.1")
+        );
+        assert!(read.tty);
+        let marked = read.restore.expect("a restore mark");
+        assert!(
+            marked.duration_since(left_at).unwrap_or_default() < Duration::from_millis(1),
+            "the mark drifted: {marked:?} against {left_at:?}"
+        );
+    }
+
+    /// A record written before any of this existed still reads, and asks for nothing.
+    #[test]
+    fn a_record_from_an_older_build_reads_without_a_terminal_or_a_restore_mark() {
+        let older = "state = \"up\"\npid = 4242\ncmd = [\"bin/vite\"]\ncwd = \"/repos/storefront\"\n";
+        let read = Record::read(older).expect("an older record reads");
+        assert_eq!(read.state, State::Up);
+        assert!(read.env.is_empty());
+        assert!(!read.tty);
+        assert_eq!(read.restore, None);
     }
 
     #[test]

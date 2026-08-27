@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::state;
 
-pub const USAGE: &str = "usage: herdr-dev [daemon [--state-root <dir>]|tail]";
+pub const USAGE: &str = "usage: herdr-dev [daemon [--state-root <dir>]|tail|attach]";
 
 const STATE_ROOT: &str = "--state-root";
 
@@ -18,6 +18,8 @@ pub enum Mode {
     /// The overlay pane's mode. The log to follow arrives in the environment rather than in argv,
     /// because the manifest declares one entrypoint for every unit.
     Tail,
+    /// The attach pane's mode. Which unit to type at arrives in the environment for the same reason.
+    Attach,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,7 @@ where
                 },
             },
             "tail" => Mode::Tail,
+            "attach" => Mode::Attach,
             other => return Err(ModeError::UnknownMode(other.to_string())),
         },
     };
@@ -79,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_and_tail_are_their_own_modes() {
+    fn daemon_and_the_two_panes_are_their_own_modes() {
         assert_eq!(
             from_args(["daemon"]),
             Ok(Mode::Daemon {
@@ -87,6 +90,7 @@ mod tests {
             })
         );
         assert_eq!(from_args(["tail"]), Ok(Mode::Tail));
+        assert_eq!(from_args(["attach"]), Ok(Mode::Attach));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use herdr_dev::store::{Identity, LOG_LINK, Record, Store};
 use herdr_dev::unit::{self, Exit, State, Status};
 
 const PATIENCE: Duration = Duration::from_secs(15);
-/// §10's grace, which the escalation test measures rather than assumes.
+/// The grace, which the escalation test measures rather than assumes.
 const GRACE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(25);
 
@@ -420,7 +420,7 @@ fn killing_the_daemon_takes_every_unit_with_it_and_leaves_no_pid_in_the_records(
 }
 
 #[test]
-fn a_daemon_started_after_a_sigkilled_predecessor_kills_the_leftovers_it_recorded() {
+fn a_daemon_started_after_a_sigkilled_predecessor_kills_the_leftovers_and_puts_them_back() {
     let scratch = Scratch::new("leftovers");
     let project = scratch.project(
         "storefront",
@@ -457,9 +457,76 @@ fn a_daemon_started_after_a_sigkilled_predecessor_kills_the_leftovers_it_recorde
         until(PATIENCE, || local::group_empty(leader)),
         "the successor left its predecessor's unit running"
     );
-    let record = record(&state, &project, "sleeper").expect("record");
-    assert_eq!(record.pid, None, "a killed leftover still claims a pid");
-    assert_eq!(status_of(&mut link, &project, "sleeper").state, State::Down);
+    // Killed and then started again, never reclaimed: what is running is the successor's own child,
+    // under a pid of its own, and the orphan it inherited is gone all the same.
+    assert_eq!(status_of(&mut link, &project, "sleeper").state, State::Up);
+    let second = pid_of(&state, &project, "sleeper");
+    assert_ne!(
+        second, leader,
+        "the leftover was adopted rather than replaced"
+    );
+    assert_eq!(
+        record(&state, &project, "sleeper").expect("record").restore,
+        None,
+        "a unit still marked would be started again by every daemon after this one"
+    );
+    assert_eq!(link.stop(&project, &unit_of(&project, "sleeper")), Ok(None));
+}
+
+#[test]
+fn a_replaced_daemon_puts_back_what_it_was_running_and_leaves_what_was_stopped_alone() {
+    let scratch = Scratch::new("restore");
+    let project = scratch.project(
+        "storefront",
+        "[local.keeper]\ncmd = [\"sh\", \"-c\", \"echo up; sleep 30\"]\n\
+         [local.by_hand]\ncmd = [\"sh\", \"-c\", \"echo up; sleep 30\"]\n\
+         [local.crasher]\ncmd = [\"sh\", \"-c\", \"exit 7\"]\n",
+    );
+    let state = scratch.state();
+    let first = {
+        let mut daemon = Daemon::serving(&state);
+        let mut link = daemon.link();
+        for name in ["keeper", "by_hand", "crasher"] {
+            link.start(&project, &unit_of(&project, name))
+                .expect("start");
+        }
+        assert!(until(PATIENCE, || log_of(&state, &project, "keeper")
+            .contains("up")));
+        assert!(until(PATIENCE, || status_of(
+            &mut link, &project, "crasher"
+        )
+        .state
+            == State::Dead));
+        // Stopped on purpose, which is the one thing a restore must not undo.
+        assert_eq!(link.stop(&project, &unit_of(&project, "by_hand")), Ok(None));
+        let first = pid_of(&state, &project, "keeper");
+        drop(link);
+
+        daemon.signal(libc::SIGTERM);
+        assert!(daemon.gone(), "the daemon ignored its own SIGTERM");
+        first
+    };
+    assert!(
+        local::group_empty(first),
+        "the stack outlived the daemon that owned it"
+    );
+
+    let successor = Daemon::serving(&state);
+    let mut link = successor.link();
+    assert_eq!(status_of(&mut link, &project, "keeper").state, State::Up);
+    assert_ne!(
+        pid_of(&state, &project, "keeper"),
+        first,
+        "the pid did not change, so nothing was actually respawned"
+    );
+    assert_eq!(status_of(&mut link, &project, "by_hand").state, State::Down);
+    assert_eq!(status_of(&mut link, &project, "crasher").state, State::Dead);
+    assert_eq!(
+        status_of(&mut link, &project, "crasher").exit,
+        Some(Exit::Code(7)),
+        "a crash that was never restored still says how it ended"
+    );
+    assert_eq!(link.stop(&project, &unit_of(&project, "keeper")), Ok(None));
 }
 
 #[test]

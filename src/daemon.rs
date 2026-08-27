@@ -11,10 +11,14 @@
 //! It is also the parent of every local unit, which is what makes *daemon alive ⇔ stack alive* true:
 //! leftovers of a previous life are killed before it serves a single request, and everything it owns
 //! is killed on the way out.
+//!
+//! One method leaves the wire format behind: `attach` answers as any other does and then stops being a
+//! conversation, because a terminal is bytes in both directions and anything framing them would show
+//! up as lag between a keystroke and the character it draws.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -27,12 +31,15 @@ use serde_json::{Value, json};
 use crate::local::Spec;
 use crate::store::Identity;
 use crate::supervisor::{GRACE, Supervisor};
+use crate::terminal::Terminal;
 use crate::{docker, state, unit};
 
-/// Bumped only on a wire-breaking change. A rebuild changes `version`, never this.
-pub const PROTOCOL: u64 = 2;
+/// Bumped only on a wire-breaking change. A rebuild changes `version`, never this. `tty` was such a
+/// change: a daemon from before it drops the key without a word and runs the unit on a pipe, and the
+/// skew warning is how that gets said instead.
+pub const PROTOCOL: u64 = 3;
 
-/// §7 says the daemon exits when it owns nothing, but at startup it owns nothing by definition and
+/// The daemon exits when it owns nothing, but at startup it owns nothing by definition and
 /// the TUI that just forked it has not connected yet. So "owns nothing" is measured over a window,
 /// and a connected client counts as ownership: a fresh daemon has this long to receive its first
 /// request, and a popup left open never times out underneath itself.
@@ -40,6 +47,7 @@ const IDLE_WINDOW: Duration = Duration::from_secs(60);
 
 const ACCEPT_POLL: Duration = Duration::from_millis(25);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
+const RELAY_CHUNK: usize = 8192;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -77,10 +85,11 @@ pub fn serve_with_idle(root: &Path, idle: Duration) -> std::io::Result<Outcome> 
     catch_signals();
 
     // Before anything else: whatever the predecessor left running dies, and the projects that have
-    // since been deleted go with it.
+    // since been deleted go with it. Only then is what it was running started again, as ours.
     let supervisor = Supervisor::new(root, GRACE);
     supervisor.kill_leftovers();
     supervisor.store().drop_vanished();
+    supervisor.restore();
 
     let socket = state::socket_path(root);
     // Holding the lock means any socket file here is the leftover of a daemon that died without
@@ -154,27 +163,76 @@ fn converse(stream: UnixStream, supervisor: &Arc<Supervisor>) {
     let Ok(reading) = stream.try_clone() else {
         return;
     };
+    let mut reader = BufReader::new(reading);
     let mut writer = &stream;
-    for line in BufReader::new(reading).lines() {
-        let Ok(line) = line else { break };
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
         if line.trim().is_empty() {
             continue;
         }
-        if writeln!(writer, "{}", answer(&line, supervisor)).is_err() {
+        let (said, attached) = answer(&line, supervisor);
+        if writeln!(writer, "{said}").is_err() {
+            break;
+        }
+        if let Some(terminal) = attached {
+            relay(reader, &stream, &terminal);
             break;
         }
     }
     let _ = stream.shutdown(Shutdown::Both);
 }
 
-fn answer(line: &str, supervisor: &Arc<Supervisor>) -> Value {
+/// The connection as the unit's terminal: keystrokes up the reader the reply came through, output back
+/// down a thread of its own so a quiet prompt never holds either end up.
+///
+/// Either end going takes the other with it. The unit exiting ends the watch, and hanging up is what
+/// tells a pane the thing it was typing at has gone.
+fn relay(mut keystrokes: BufReader<UnixStream>, stream: &UnixStream, terminal: &Arc<Terminal>) {
+    let watched = terminal.watch();
+    let Ok(mut out) = stream.try_clone() else {
+        return;
+    };
+    let writing = std::thread::spawn(move || {
+        for chunk in watched {
+            if out.write_all(&chunk).is_err() {
+                break;
+            }
+        }
+        let _ = out.shutdown(Shutdown::Both);
+    });
+    let mut buffer = [0u8; RELAY_CHUNK];
+    while let Ok(read) = keystrokes.read(&mut buffer) {
+        if read == 0 || terminal.typed(&buffer[..read]).is_err() {
+            break;
+        }
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+    let _ = writing.join();
+}
+
+/// Only `attach` answers with a terminal; every other method goes on being a conversation.
+fn answer(line: &str, supervisor: &Arc<Supervisor>) -> (Value, Option<Arc<Terminal>>) {
     let request: Value = match serde_json::from_str(line) {
         Ok(request) => request,
-        Err(error) => return failure(Value::Null, "malformed", &error.to_string()),
+        Err(error) => return (failure(Value::Null, "malformed", &error.to_string()), None),
     };
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let params = request.get("params").cloned().unwrap_or(Value::Null);
-    match request.get("method").and_then(Value::as_str) {
+    let method = request.get("method").and_then(Value::as_str);
+    if method == Some("attach") {
+        return match terminal(&params, supervisor) {
+            Err(complaint) => (failure(id, "attach", &complaint), None),
+            Ok(terminal) => (
+                json!({"id": id, "result": {"attached": true}}),
+                Some(terminal),
+            ),
+        };
+    }
+    let said = match method {
         Some("handshake") => json!({"id": id, "result": handshake()}),
         Some("start") => verb(id, &params, Act::Start, supervisor),
         Some("restart") => verb(id, &params, Act::Restart, supervisor),
@@ -182,7 +240,7 @@ fn answer(line: &str, supervisor: &Arc<Supervisor>) -> Value {
         Some("status") => match project(&params) {
             Err(complaint) => failure(id, "malformed", &complaint),
             Ok(project) => {
-                // §9's two liveness authorities meet here and nowhere else: this daemon's own
+                // The two liveness authorities meet here and nowhere else: this daemon's own
                 // `wait()` for the units it forked, `compose ps --all` for what docker holds.
                 let mut statuses = supervisor.status(&project);
                 statuses.extend(docker::statuses(
@@ -197,9 +255,38 @@ fn answer(line: &str, supervisor: &Arc<Supervisor>) -> Value {
                 json!({"id": id, "result": {"units": units}})
             }
         },
+        Some("resize") => match resized(&params, supervisor) {
+            Err(complaint) => failure(id, "resize", &complaint),
+            Ok(()) => json!({"id": id, "result": {}}),
+        },
         Some(method) => failure(id, "unknown_method", &format!("no method `{method}`")),
         None => failure(id, "malformed", "request carries no method"),
-    }
+    };
+    (said, None)
+}
+
+fn terminal(params: &Value, supervisor: &Arc<Supervisor>) -> Result<Arc<Terminal>, String> {
+    let project = project(params)?;
+    let name = params
+        .get("unit")
+        .and_then(|unit| unit.get("name"))
+        .and_then(Value::as_str)
+        .ok_or("unit without a name")?;
+    supervisor.terminal(&project, name)
+}
+
+fn resized(params: &Value, supervisor: &Arc<Supervisor>) -> Result<(), String> {
+    let rows = params
+        .get("rows")
+        .and_then(Value::as_u64)
+        .ok_or("no rows")?;
+    let columns = params
+        .get("columns")
+        .and_then(Value::as_u64)
+        .ok_or("no columns")?;
+    terminal(params, supervisor)?
+        .resize(rows as u16, columns as u16)
+        .map_err(|error| format!("cannot resize: {error}"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,8 +296,8 @@ enum Act {
     Restart,
 }
 
-/// Which half of §9 a verb lands on. The daemon is the parent of a local unit and merely a caller of
-/// `docker compose` for a service, so the two share a wire and nothing else.
+/// The daemon is the parent of a local unit and merely a caller of `docker compose` for a service,
+/// so the two share a wire and nothing else.
 enum Target {
     Local(Spec),
     Docker(docker::Service),
@@ -290,6 +377,7 @@ fn target(params: &Value) -> Result<Target, String> {
                     .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
                     .collect(),
             },
+            tty: unit.get("tty").and_then(Value::as_bool).unwrap_or_default(),
         })),
         Some(kind) => Err(format!("unit of unknown kind `{kind}`")),
     }
@@ -338,7 +426,6 @@ fn failure(id: Value, code: &str, message: &str) -> Value {
     json!({"id": id, "error": {"code": code, "message": message}})
 }
 
-/// What the daemon owns, and since when it owned nothing.
 struct Ledger {
     clients: AtomicUsize,
     empty_since: Mutex<Option<Instant>>,
@@ -372,6 +459,11 @@ impl Ledger {
 mod tests {
     use super::*;
 
+    /// The reply alone: nothing in this module attaches, so no connection ever stops being one.
+    fn said(line: &str, supervisor: &Arc<Supervisor>) -> Value {
+        answer(line, supervisor).0
+    }
+
     /// Every request in this module is answered without a project, so no unit is ever spawned.
     fn supervisor() -> Arc<Supervisor> {
         Supervisor::new(
@@ -382,7 +474,7 @@ mod tests {
 
     #[test]
     fn a_handshake_carries_this_build_its_protocol_and_the_daemon_pid() {
-        let reply = answer(
+        let reply = said(
             &json!({"id": "t1", "method": "handshake"}).to_string(),
             &supervisor(),
         );
@@ -394,7 +486,7 @@ mod tests {
 
     #[test]
     fn an_unknown_method_is_refused_by_name_rather_than_dropped() {
-        let reply = answer(
+        let reply = said(
             &json!({"id": 7, "method": "levitate"}).to_string(),
             &supervisor(),
         );
@@ -411,12 +503,9 @@ mod tests {
     #[test]
     fn a_line_that_is_not_a_request_still_gets_a_reply() {
         let supervisor = supervisor();
+        assert_eq!(said("{not json", &supervisor)["error"]["code"], "malformed");
         assert_eq!(
-            answer("{not json", &supervisor)["error"]["code"],
-            "malformed"
-        );
-        assert_eq!(
-            answer("{\"id\": 1}", &supervisor)["error"]["code"],
+            said("{\"id\": 1}", &supervisor)["error"]["code"],
             "malformed"
         );
     }
@@ -434,7 +523,7 @@ mod tests {
                 "method": "start",
                 "params": {"project": {"path": "/repos/storefront"}, "unit": unit},
             });
-            let reply = answer(&request.to_string(), &supervisor);
+            let reply = said(&request.to_string(), &supervisor);
             assert_eq!(reply["error"]["code"], "malformed", "{reply}");
         }
     }

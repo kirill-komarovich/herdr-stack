@@ -1,4 +1,4 @@
-//! Following one log file by byte offset, and the got-shorter rule of §8.
+//! Following one log file by byte offset, and the got-shorter rule.
 //!
 //! A unit's log is truncated at spawn and the previous generation is renamed aside, so a follower
 //! that only ever moved forward would sit past the end of a fresh file and go silent for the rest of
@@ -21,7 +21,6 @@ pub const LOG_ENV: &str = "HERDR_DEV_LOG";
 const POLL: Duration = Duration::from_millis(150);
 pub const RESTARTED: &str = "── log restarted ──";
 
-/// What one read of the log turned up.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Fresh {
     pub bytes: Vec<u8>,
@@ -52,9 +51,8 @@ impl Follower {
         }
     }
 
-    /// Starts roughly `bytes` from the end of a log that already exists rather than at its start: §8
-    /// lets a log grow for a week, and a reader that took all of it in would read the week into
-    /// memory. The line the offset lands in the middle of is dropped rather than shown half.
+    /// Starts roughly `bytes` from the end of a log that already exists rather than at its start: a
+    /// log grows for a week, and a reader that took all of it in would read the week into memory. The line the offset lands in the middle of is dropped rather than shown half.
     pub fn watching_tail(path: impl Into<PathBuf>, bytes: u64) -> Follower {
         Follower {
             path: path.into(),
@@ -131,8 +129,8 @@ pub fn run() -> io::Result<()> {
     }
 }
 
-/// One read, written out. A restart is announced, because output silently jumping back to the top of
-/// a fresh log reads as corruption.
+/// A restart is announced, because output silently jumping back to the top of a fresh log reads as
+/// corruption.
 fn pump(follower: &mut Follower, out: &mut impl Write) -> io::Result<()> {
     let fresh = follower.read()?;
     if fresh.restarted {
@@ -205,7 +203,7 @@ mod tests {
         assert_eq!(follower.read().expect("read"), Fresh::default());
     }
 
-    /// The rotation §8 actually performs: rename aside, create anew. The replacement can be longer
+    /// The rotation the store actually performs: rename aside, create anew. The replacement can be longer
     /// than the offset the follower held, so only the inode gives it away.
     #[test]
     fn a_log_rotated_out_from_under_the_follower_is_read_from_the_start_too() {
@@ -265,10 +263,10 @@ mod tests {
         );
     }
 
-    /// The manifest is the contract these constants stand for; §3 also spells out what it must not
-    /// declare.
+    /// The manifest is the contract these constants stand for. Two panes, because following a log and
+    /// typing at a unit are two different things to be looking at.
     #[test]
-    fn the_plugin_manifest_declares_one_relative_pane_and_nothing_else() {
+    fn the_plugin_manifest_declares_the_two_relative_panes_and_nothing_else() {
         let doc = include_str!("../herdr-plugin.toml")
             .parse::<DocumentMut>()
             .expect("manifest parses");
@@ -277,16 +275,21 @@ mod tests {
             assert!(doc.get(absent).is_none(), "manifest declares {absent}");
         }
         let panes = doc["panes"].as_array_of_tables().expect("panes");
-        assert_eq!(panes.len(), 1);
-        let pane = panes.get(0).expect("pane");
-        assert_eq!(pane["id"].as_str(), Some(ENTRYPOINT));
-        assert_eq!(pane["placement"].as_str(), Some("overlay"));
-        let command: Vec<&str> = pane["command"]
-            .as_array()
-            .expect("command")
+        let declared: Vec<&str> = panes
             .iter()
-            .map(|word| word.as_str().expect("word"))
+            .map(|pane| pane["id"].as_str().expect("an id"))
             .collect();
-        assert_eq!(command, ["./target/release/herdr-dev", ENTRYPOINT]);
+        assert_eq!(declared, [ENTRYPOINT, crate::attach::ENTRYPOINT]);
+        for pane in panes {
+            let id = pane["id"].as_str().expect("an id");
+            assert_eq!(pane["placement"].as_str(), Some("overlay"));
+            let command: Vec<&str> = pane["command"]
+                .as_array()
+                .expect("command")
+                .iter()
+                .map(|word| word.as_str().expect("word"))
+                .collect();
+            assert_eq!(command, ["./target/release/herdr-dev", id]);
+        }
     }
 }

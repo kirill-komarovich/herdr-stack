@@ -24,13 +24,14 @@ use serde_json::json;
 
 use crate::client::{Endpoint, Link, Target};
 use crate::form::Form;
-use crate::manifest::Project;
+use crate::manifest::{LocalUnit, Project};
 use crate::peek::{self, Peek};
 use crate::project::Resolution;
 use crate::rows::{self, Row};
 use crate::state;
 use crate::store::{Identity, Store};
 use crate::tail;
+use crate::terminal;
 use crate::unit;
 use crate::view::{Statuses, View};
 
@@ -48,6 +49,8 @@ const DAEMON_SKEWED: &str = "daemon skewed";
 const NO_DAEMON: &str = "no daemon";
 const NO_VERB: &str = "s, x and r act on unit rows; ↹ unfolds a repo";
 const NO_DOCKER_LOG: &str = "a docker service has no log file of ours to overlay";
+const NO_DOCKER_TERMINAL: &str = "a docker service has no terminal of ours to type at";
+const NO_REPO_TERMINAL: &str = "a repo row is not a unit; expand it with tab";
 
 /// How long the loop waits for a keystroke while a peek is open. Following has to happen without one,
 /// and an idle peek costs one wakeup a tick and no redraw, because an unchanged frame writes nothing.
@@ -70,8 +73,7 @@ pub fn run() -> io::Result<()> {
 
 fn event_loop() -> io::Result<()> {
     let mut terminal = ratatui::Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    // §12's startup order: the daemon first, then the project. The link is held for the popup's whole
-    // life, which is also what keeps an idle daemon from exiting underneath it.
+    // The daemon first, then the project. The link is held for the popup's whole life, which is also what keeps an idle daemon from exiting underneath it.
     let mut link = Endpoint::spelled_out().open();
     let daemon = daemon_report(&link);
     let Resolution {
@@ -218,6 +220,11 @@ fn event_loop() -> io::Result<()> {
             },
             KeyCode::Char('O') => match open_overlay(view.as_ref(), &rows, cursor) {
                 // The overlay outlives us; the popup would own the keyboard if it stayed.
+                Ok(()) => return Ok(()),
+                Err(complaint) => notice = Some(complaint),
+            },
+            KeyCode::Char('A') => match open_attach(view.as_ref(), &rows, cursor) {
+                // The pane wants the keyboard, and only one of us can have it.
                 Ok(()) => return Ok(()),
                 Err(complaint) => notice = Some(complaint),
             },
@@ -453,6 +460,63 @@ fn open_overlay(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(), 
     .map_err(|error| error.to_string())
 }
 
+/// The unit the row under the cursor would be typed at, or why there is none. Decided before anything
+/// is opened, because a pane onto nothing is worse than a sentence in the footer.
+fn attachable<'a>(
+    view: Option<&'a View>,
+    rows: &[Row],
+    cursor: usize,
+) -> Result<(&'a Project, &'a LocalUnit), String> {
+    let view = view.ok_or_else(|| "no project here".to_string())?;
+    let row = rows
+        .get(cursor)
+        .ok_or_else(|| "nothing here to type at".to_string())?;
+    match row.kind {
+        unit::DOCKER => return Err(NO_DOCKER_TERMINAL.to_string()),
+        unit::LOCAL => {}
+        _ => return Err(NO_REPO_TERMINAL.to_string()),
+    }
+    let project = view
+        .project(row.owner)
+        .ok_or_else(|| NO_REPO_TERMINAL.to_string())?;
+    let unit = project
+        .local
+        .iter()
+        .find(|unit| unit.name == row.name)
+        .ok_or_else(|| format!("no local unit named {}", row.name))?;
+    if let Some(problem) = &unit.problem {
+        return Err(problem.clone());
+    }
+    if !unit.tty {
+        return Err(terminal::runs_on_a_pipe(&unit.name));
+    }
+    // The daemon would refuse a unit it is not the parent of, and it is the row that can say why.
+    if row.state != unit::State::Up.label() {
+        return Err(format!("{} is not running; start it first", unit.name));
+    }
+    Ok((project, unit))
+}
+
+/// The attach pane `A` opens. Herdr runs the pane the manifest declares; all this call adds is which
+/// unit it should type at.
+fn open_attach(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(), String> {
+    let (project, unit) = attachable(view, rows, cursor)?;
+    crate::herdr::request(
+        "plugin.pane.open",
+        json!({
+            "plugin_id": tail::PLUGIN_ID,
+            "entrypoint": crate::attach::ENTRYPOINT,
+            "env": {
+                crate::attach::PROJECT_ENV: project.root.to_string_lossy(),
+                crate::attach::UNIT_ENV: unit.name,
+            },
+            "focus": true,
+        }),
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
 const LAUNCHING: &str = "splitting a pane and starting an agent…";
 
 fn hand_to_agent() -> Result<(), String> {
@@ -533,8 +597,8 @@ fn daemon_report(link: &Result<Link, String>) -> Daemon {
     }
 }
 
-/// Everything with a claim on the footer, newest last: a manifest's own complaints stand for as long as
-/// the manifest does (§5), and the answer to the last keystroke is the line nearest the keys.
+/// Everything with a claim on the footer, newest last: a manifest's own complaints stand for as long
+/// as the manifest does, and the answer to the last keystroke is the line nearest the keys.
 fn notices(
     view: Option<&View>,
     daemon: &Daemon,
@@ -612,6 +676,9 @@ fn keys(view: Option<&View>, dim: Style) -> Line<'static> {
                 ("L", "log"),
                 ("O", "overlay"),
             ]);
+            if view.has_terminals() {
+                hints.push(("A", "attach"));
+            }
             if view.has_repos() {
                 hints.push(("\u{21b9}", "repo"));
             }
@@ -762,7 +829,7 @@ fn empty_state(dim: Style) -> Vec<Line<'static>> {
     ]
 }
 
-/// The six columns of §12, each padded to its own width bar the note, which takes what is left.
+/// Each column padded to its own width bar the note, which takes what is left.
 fn cells(row: &Row, name_width: usize) -> [String; 6] {
     [
         row.glyph.to_string(),
@@ -890,6 +957,45 @@ mod tests {
         let found = log_path(&store, &view, &rows, 0);
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(found, Ok(log));
+    }
+
+    /// The rows a `View` builds carry `down` for a local unit the daemon has said nothing about, so
+    /// running has to be put there by hand.
+    fn running(rows: &mut [Row], name: &str) {
+        for row in rows.iter_mut().filter(|row| row.name == name) {
+            row.state = unit::State::Up.label().to_string();
+        }
+    }
+
+    #[test]
+    fn only_a_running_unit_that_asked_for_a_terminal_can_be_typed_at() {
+        let view = view(
+            "[local.console]\ncmd = [\"bin/rails\", \"c\"]\ntty = true\n\
+             [local.vite]\ncmd = [\"bin/vite\"]\n[docker]\nnames = [\"db\"]\n\
+             [includes.accounts]\npath = \"/repos/accounts\"\n",
+        );
+        let mut rows = shown(&view);
+        assert_eq!(
+            attachable(Some(&view), &rows, 0).unwrap_err(),
+            NO_DOCKER_TERMINAL
+        );
+        assert_eq!(
+            attachable(Some(&view), &rows, 3).unwrap_err(),
+            NO_REPO_TERMINAL
+        );
+        // Declared with a terminal, but nothing is running it yet.
+        let complaint = attachable(Some(&view), &rows, 1).unwrap_err();
+        assert_eq!(complaint, "console is not running; start it first");
+        // Running, but on a pipe: no terminal was ever asked for.
+        running(&mut rows, "vite");
+        let complaint = attachable(Some(&view), &rows, 2).unwrap_err();
+        assert!(complaint.contains("vite runs on a pipe"), "{complaint}");
+        assert!(complaint.contains("tty = true"), "{complaint}");
+
+        running(&mut rows, "console");
+        let (project, unit) = attachable(Some(&view), &rows, 1).expect("a unit to type at");
+        assert_eq!(unit.name, "console");
+        assert_eq!(project.root, view.focused().root);
     }
 
     #[test]

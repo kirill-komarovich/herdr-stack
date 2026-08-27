@@ -27,8 +27,6 @@ const DOWN: &str = "j";
 const UP: &str = "k";
 const ESC: &str = "\u{1b}";
 
-/// The manifests of §5's own examples, read from where they live so a fixture and its copy cannot
-/// drift apart.
 const EXAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifests");
 
 fn example(name: &str) -> String {
@@ -50,7 +48,7 @@ impl Stage {
         let home = root.join("home");
         std::fs::create_dir_all(home.join(".local/bin")).expect("a home");
         std::fs::create_dir_all(home.join(".config/herdr")).expect("a herdr config dir");
-        // §6 spawns through mise at a spelled-out path under HOME, and this HOME is not the real one.
+        // A unit spawns through mise at a spelled-out path under HOME, and this HOME is not the real one.
         std::os::unix::fs::symlink(local::mise_path(), home.join(".local/bin/mise")).expect("mise");
         Stage {
             root,
@@ -108,7 +106,7 @@ impl Stage {
 }
 
 /// The popup goes first — it owns nothing — then the daemon it started, whose exit takes every unit
-/// with it (§7).
+/// with it.
 impl Drop for Stage {
     fn drop(&mut self) {
         if let Some(pty) = self.pty.as_mut() {
@@ -220,7 +218,7 @@ fn a_unit_started_from_the_including_view_is_the_same_unit_from_the_included_rep
         "the including project answered for someone else's unit: {claimed:?}",
     );
 
-    // §8: the record and the log are the included repo's, keyed by its own path.
+    // The record and the log are the included repo's, keyed by its own path.
     let logs = |repo: &Path| repo.join(LOG_LINK).join("local-ticker.log");
     assert!(logs(&inner).exists(), "no log under the included repo");
     assert!(
