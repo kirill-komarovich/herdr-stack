@@ -92,6 +92,12 @@ impl View {
         }
     }
 
+    /// Every include this view read, unfolded or not: a caller with no screen — the CLI — covers the
+    /// whole of what the focused manifest names rather than what a cursor has reached.
+    pub fn included(&self) -> &[Included] {
+        &self.included
+    }
+
     pub fn on_screen(&self) -> Vec<(Owner, &Project)> {
         let mut projects = vec![(Owner::Focused, &self.focused)];
         projects.extend(self.expanded.iter().filter_map(|index| {

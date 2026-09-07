@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod attach;
+pub mod cli;
 pub mod client;
 pub mod daemon;
 pub mod docker;
@@ -9,6 +10,7 @@ pub mod local;
 pub mod manifest;
 pub mod mode;
 pub mod peek;
+pub mod ports;
 pub mod project;
 pub mod readable;
 pub mod rows;

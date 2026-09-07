@@ -1,4 +1,5 @@
 use herdr_dev::attach;
+use herdr_dev::cli;
 use herdr_dev::daemon;
 use herdr_dev::mode::{self, Mode, USAGE};
 use herdr_dev::tail;
@@ -39,5 +40,26 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        // The agent-facing modes answer on stdout and complain on stderr, so a caller may parse the
+        // one without stripping the other, and say by their exit status whether the verb took.
+        Mode::Status { ask } => match cli::status(&ask) {
+            Ok(said) => cli::print(&said),
+            Err(error) => {
+                eprintln!("herdr-dev: {error}");
+                std::process::exit(1);
+            }
+        },
+        Mode::Control { act, ask, units } => match cli::control(act, &ask, &units) {
+            Ok((said, done)) => {
+                cli::print(&said);
+                if !done {
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("herdr-dev: {error}");
+                std::process::exit(1);
+            }
+        },
     }
 }

@@ -172,6 +172,7 @@ mod tests {
                     uptime: Some(Duration::from_secs(724)),
                     exit: None,
                     note: None,
+                    ports: Vec::new(),
                 },
             ),
             (
@@ -181,6 +182,7 @@ mod tests {
                     uptime: None,
                     exit: Some(Exit::Code(1)),
                     note: None,
+                    ports: Vec::new(),
                 },
             ),
         ]);
@@ -218,6 +220,7 @@ mod tests {
                     uptime: Some(Duration::from_secs(2460)),
                     exit: None,
                     note: Some("unhealthy".into()),
+                    ports: Vec::new(),
                 },
             ),
             (
@@ -227,6 +230,7 @@ mod tests {
                     uptime: None,
                     exit: Some(Exit::Code(0)),
                     note: None,
+                    ports: Vec::new(),
                 },
             ),
         ]);
@@ -263,6 +267,7 @@ mod tests {
                 uptime: None,
                 exit: None,
                 note: Some("stale: up 41m00s, seen 2m30s ago".into()),
+                ports: Vec::new(),
             },
         )]);
         let rows = rows(

@@ -56,6 +56,9 @@ pub struct Container {
     pub state: String,
     pub health: String,
     pub exit_code: i32,
+    /// Host ports, from `Publishers`. A container is reachable at these and at nothing else, which is
+    /// why the target port inside it is dropped.
+    pub ports: Vec<u16>,
 }
 
 impl Container {
@@ -80,12 +83,40 @@ impl Container {
                 .get("ExitCode")
                 .and_then(Value::as_i64)
                 .unwrap_or_default() as i32,
+            ports: published(value),
         })
+    }
+
+    fn published(&self) -> Vec<u16> {
+        match self.running() {
+            true => self.ports.clone(),
+            // An exited container's publishers are still reported, and nothing answers on them.
+            false => Vec::new(),
+        }
     }
 
     fn running(&self) -> bool {
         self.state == RUNNING
     }
+}
+
+/// A publisher with `PublishedPort` 0 is a port compose knows about but has not bound to the host.
+fn published(value: &Value) -> Vec<u16> {
+    let mut ports: Vec<u16> = value
+        .get("Publishers")
+        .and_then(Value::as_array)
+        .map(|publishers| {
+            publishers
+                .iter()
+                .filter_map(|publisher| publisher.get("PublishedPort")?.as_u64())
+                .filter(|port| *port != 0)
+                .map(|port| port as u16)
+                .collect()
+        })
+        .unwrap_or_default();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
 }
 
 /// Compose emits one object per line, and emitted a single array in older versions; a project with
@@ -236,6 +267,7 @@ pub fn observed_status(container: Option<&Container>, one_shot: bool) -> Status 
         return Status::of(State::Down);
     };
     let mut status = Status::of(State::Down);
+    status.ports = container.published();
     match (container.state.as_str(), container.health.as_str()) {
         (RUNNING, UNHEALTHY) => {
             status.state = State::Up;
@@ -293,6 +325,9 @@ fn remembered(cache: &Cache) -> Container {
         state: cache.state.clone(),
         health: cache.health.clone(),
         exit_code: cache.exit_code,
+        // The cache is a display fallback for a docker that stopped answering; a port nobody has
+        // just confirmed is not worth remembering.
+        ports: Vec::new(),
     }
 }
 
@@ -303,6 +338,7 @@ fn cached(container: Option<Container>, uptime: Option<Duration>) -> Cache {
         state: String::new(),
         health: String::new(),
         exit_code: 0,
+        ports: Vec::new(),
     });
     Cache {
         state: container.state,
@@ -468,6 +504,7 @@ mod tests {
                 ("never", "created", "", 0),
                 ("oneshot", "exited", "", 0),
                 ("plain", "running", "", 0),
+                ("published", "running", "", 0),
                 ("sick", "running", "unhealthy", 0),
                 ("slow", "running", "starting", 0),
             ]
@@ -476,6 +513,26 @@ mod tests {
             RECORDED.contains("\"Status\":\"Up About a minute (health: starting)\""),
             "the fixture must still carry the prose this code refuses to parse"
         );
+    }
+
+    #[test]
+    fn a_published_port_is_read_once_however_many_addresses_it_is_bound_on() {
+        let status = observed("published", false);
+        assert_eq!(status.ports, vec![54999]);
+        assert!(observed("plain", false).ports.is_empty());
+    }
+
+    #[test]
+    fn a_service_that_is_not_running_publishes_nothing_whatever_compose_still_reports() {
+        let stopped = Container {
+            service: "published".into(),
+            name: "probe-published-1".into(),
+            state: EXITED.into(),
+            health: String::new(),
+            exit_code: 0,
+            ports: vec![54999],
+        };
+        assert!(observed_status(Some(&stopped), false).ports.is_empty());
     }
 
     #[test]

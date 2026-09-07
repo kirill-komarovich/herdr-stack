@@ -101,6 +101,10 @@ pub struct Status {
     /// The note column, when the state itself carries one: `unhealthy` on a service that is up all
     /// the same, or how old a row is once docker stopped answering.
     pub note: Option<String>,
+    /// Host ports the unit is listening on, in ascending order. Never declared anywhere: docker
+    /// publishes them and a local unit is observed holding them, so an empty list means "none seen"
+    /// rather than "none configured".
+    pub ports: Vec<u16>,
 }
 
 impl Status {
@@ -110,6 +114,7 @@ impl Status {
             uptime: None,
             exit: None,
             note: None,
+            ports: Vec::new(),
         }
     }
 
@@ -141,6 +146,9 @@ impl Status {
         if let Some(note) = &self.note {
             object.insert("note".into(), json!(note));
         }
+        if !self.ports.is_empty() {
+            object.insert("ports".into(), json!(self.ports));
+        }
         value
     }
 
@@ -166,6 +174,16 @@ impl Status {
                 .get("note")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            ports: value
+                .get("ports")
+                .and_then(Value::as_array)
+                .map(|ports| {
+                    ports
+                        .iter()
+                        .filter_map(|port| port.as_u64().map(|port| port as u16))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -237,6 +255,7 @@ mod tests {
             uptime: Some(Duration::from_secs(61)),
             exit: Some(Exit::Code(1)),
             note: None,
+            ports: Vec::new(),
         };
         assert_eq!(up.timing(), "1m01s");
 
@@ -245,6 +264,7 @@ mod tests {
             uptime: None,
             exit: Some(Exit::Signal(9)),
             note: None,
+            ports: Vec::new(),
         };
         assert_eq!(dead.timing(), "signal 9");
         assert_eq!(Status::of(State::Down).timing(), "");
@@ -258,18 +278,21 @@ mod tests {
                 uptime: Some(Duration::from_millis(41_000)),
                 exit: None,
                 note: Some("unhealthy".into()),
+                ports: Vec::new(),
             },
             Status {
                 state: State::Dead,
                 uptime: None,
                 exit: Some(Exit::Code(7)),
                 note: None,
+                ports: Vec::new(),
             },
             Status {
                 state: State::Down,
                 uptime: None,
                 exit: Some(Exit::Signal(15)),
                 note: None,
+                ports: Vec::new(),
             },
         ];
         for status in statuses {

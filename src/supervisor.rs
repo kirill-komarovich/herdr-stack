@@ -214,6 +214,7 @@ impl Supervisor {
                         uptime: live.started_at.elapsed().ok(),
                         exit: None,
                         note: None,
+                        ports: Vec::new(),
                     },
                 );
             }
@@ -459,6 +460,7 @@ fn remembered(record: &Record) -> Status {
         uptime: None,
         exit: record.exit,
         note: None,
+        ports: Vec::new(),
     }
 }
 
