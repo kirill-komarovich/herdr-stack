@@ -804,13 +804,14 @@ fn unit_lines(rows: &[Row], cursor: usize, dim: Style) -> Vec<Line<'static>> {
             } else {
                 dim
             };
+            let state_style = state_style(&row.state, dim);
             Line::from(vec![
                 Span::styled(marker.to_string(), marker_style),
-                Span::styled(format!("{glyph} "), dim),
+                Span::styled(format!("{glyph} "), state_style),
                 Span::raw(name),
                 Span::styled(kind, dim),
-                Span::raw(state),
-                Span::raw(timing),
+                Span::styled(state, state_style),
+                Span::styled(timing, dim),
                 Span::styled(note, dim),
             ])
         })
@@ -830,6 +831,25 @@ fn empty_state(dim: Style) -> Vec<Line<'static>> {
 }
 
 /// Each column padded to its own width bar the note, which takes what is left.
+/// The state column is the one cell worth reading at a glance, so it carries the colour and the
+/// glyph takes the same one. A row whose state is not a `unit::State` is holding docker's own health
+/// wording, which is only ever something to look at; a repo row has no state at all.
+fn state_style(state: &str, dim: Style) -> Style {
+    let state = state.trim();
+    if state.is_empty() {
+        return dim;
+    }
+
+    match unit::State::read(state) {
+        Some(unit::State::Up) => Style::default().fg(Color::Green),
+        Some(unit::State::Starting) => Style::default().fg(Color::Yellow),
+        Some(unit::State::Done) => Style::default().fg(Color::Blue),
+        Some(unit::State::Dead) => Style::default().fg(Color::Red),
+        Some(unit::State::Down) | Some(unit::State::Unknown) => dim,
+        None => Style::default().fg(Color::Yellow),
+    }
+}
+
 fn cells(row: &Row, name_width: usize) -> [String; 6] {
     [
         row.glyph.to_string(),
