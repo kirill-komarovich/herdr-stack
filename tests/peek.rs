@@ -328,7 +328,7 @@ fn a_docker_row_peeks_that_services_compose_logs_and_the_stream_ends_with_the_pe
     let shown = loop {
         peek.pump();
         let shown = peek.view(20, 180);
-        if shown.iter().any(|line| line.contains("tick 3")) {
+        if shown.iter().any(|line| line.text().contains("tick 3")) {
             break shown;
         }
         assert!(Instant::now() < deadline, "the peek showed {shown:?}");
@@ -336,8 +336,8 @@ fn a_docker_row_peeks_that_services_compose_logs_and_the_stream_ends_with_the_pe
     };
     assert_eq!(peek.trouble(), None, "{shown:?}");
     assert!(
-        shown.iter().all(|line| !line.contains('\u{1b}')),
-        "colour reached the screen: {shown:?}"
+        shown.iter().all(|line| !line.text().contains('\u{1b}')),
+        "an escape reached the screen as content: {shown:?}"
     );
     // The CLI and the compose plugin it execs both match, so the count is a floor rather than a number.
     assert!(

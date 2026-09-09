@@ -27,6 +27,7 @@ use crate::form::Form;
 use crate::manifest::{LocalUnit, Project};
 use crate::peek::{self, Peek};
 use crate::project::Resolution;
+use crate::readable;
 use crate::rows::{self, Row};
 use crate::state;
 use crate::store::{Identity, Store};
@@ -265,7 +266,7 @@ fn draw_peek(frame: &mut Frame, peek: &mut Peek) {
     let shown = peek.view(areas[1].height as usize, areas[1].width as usize);
     // No `Wrap`: a long line is clipped, which is what a peek does with one.
     frame.render_widget(
-        Paragraph::new(shown.into_iter().map(Line::raw).collect::<Vec<_>>()),
+        Paragraph::new(shown.iter().map(painted).collect::<Vec<_>>()),
         areas[1],
     );
 
@@ -834,6 +835,46 @@ fn empty_state(dim: Style) -> Vec<Line<'static>> {
 /// The state column is the one cell worth reading at a glance, so it carries the colour and the
 /// glyph takes the same one. A row whose state is not a `unit::State` is holding docker's own health
 /// wording, which is only ever something to look at; a repo row has no state at all.
+/// A log line as the program painted it. Its colours name palette entries rather than paint, so a
+/// log reads in the terminal's own theme, the same as it would in a shell.
+fn painted(line: &readable::Line) -> Line<'static> {
+    Line::from(
+        line.segments()
+            .iter()
+            .map(|segment| Span::styled(segment.text.clone(), sgr_style(segment.sgr)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn sgr_style(sgr: readable::Sgr) -> Style {
+    let mut style = Style::default();
+    if let Some(colour) = sgr.fg {
+        style = style.fg(paint(colour));
+    }
+    if let Some(colour) = sgr.bg {
+        style = style.bg(paint(colour));
+    }
+    for (set, modifier) in [
+        (sgr.bold, Modifier::BOLD),
+        (sgr.dim, Modifier::DIM),
+        (sgr.italic, Modifier::ITALIC),
+        (sgr.underline, Modifier::UNDERLINED),
+        (sgr.reverse, Modifier::REVERSED),
+    ] {
+        if set {
+            style = style.add_modifier(modifier);
+        }
+    }
+    style
+}
+
+fn paint(colour: readable::Colour) -> Color {
+    match colour {
+        readable::Colour::Ansi(index) | readable::Colour::Indexed(index) => Color::Indexed(index),
+        readable::Colour::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+    }
+}
+
 fn state_style(state: &str, dim: Style) -> Style {
     let state = state.trim();
     if state.is_empty() {

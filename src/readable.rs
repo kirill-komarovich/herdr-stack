@@ -1,8 +1,8 @@
 //! Program output turned into lines a plain reader can be shown, in one place.
 //!
-//! Everything a terminal would act on is spent here rather than passed on: colour and cursor motion
-//! would reach the popup's own screen as commands rather than as content, and the log has three
-//! readers — the overlay, the peek and your own shell — of which the last renders nothing at all.
+//! Cursor motion is spent here rather than passed on: it would reach the popup's own screen as a
+//! command rather than as content. Colour is kept, as the style of the characters it applied to, so a
+//! reader that can paint gets what the program meant and one that cannot asks for the text.
 //!
 //! A carriage return is the exception that has to be acted on rather than dropped: a progress bar is
 //! one line rewritten in place, and a filter that dropped the return would hand every frame of it back
@@ -18,16 +18,190 @@
 /// hold the whole run in memory.
 const LONGEST_LINE: usize = 8192;
 
+/// A colour as the sequence named it. Which paint an `Ansi` or `Indexed` ends up being is the
+/// reader's business: it names a palette entry, and the palette belongs to the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Colour {
+    /// 0..=7 as written, 8..=15 for the bright half.
+    Ansi(u8),
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+/// How a run of characters was painted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sgr {
+    pub fg: Option<Colour>,
+    pub bg: Option<Colour>,
+    pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub reverse: bool,
+}
+
+impl Sgr {
+    /// One parameter list of a `CSI ... m`, applied over what was already in force. Anything not
+    /// understood is skipped rather than reset: a sequence a reader cannot paint is not a reason to
+    /// drop the paint it can.
+    fn apply(&mut self, params: &str) {
+        let mut codes = params
+            .split(';')
+            .map(|code| code.trim().parse::<u16>().unwrap_or(0));
+        while let Some(code) = codes.next() {
+            match code {
+                0 => *self = Sgr::default(),
+                1 => self.bold = true,
+                2 => self.dim = true,
+                3 => self.italic = true,
+                4 => self.underline = true,
+                7 => self.reverse = true,
+                22 => {
+                    self.bold = false;
+                    self.dim = false;
+                }
+                23 => self.italic = false,
+                24 => self.underline = false,
+                27 => self.reverse = false,
+                30..=37 => self.fg = Some(Colour::Ansi((code - 30) as u8)),
+                38 => self.fg = extended(&mut codes),
+                39 => self.fg = None,
+                40..=47 => self.bg = Some(Colour::Ansi((code - 40) as u8)),
+                48 => self.bg = extended(&mut codes),
+                49 => self.bg = None,
+                90..=97 => self.fg = Some(Colour::Ansi((code - 90 + 8) as u8)),
+                100..=107 => self.bg = Some(Colour::Ansi((code - 100 + 8) as u8)),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The `5;n` and `2;r;g;b` tails of a 38 or 48. A tail that runs out mid-colour leaves the slot
+/// untouched, which is the same as the sequence never having arrived.
+fn extended(codes: &mut impl Iterator<Item = u16>) -> Option<Colour> {
+    match codes.next()? {
+        5 => Some(Colour::Indexed(codes.next()? as u8)),
+        2 => Some(Colour::Rgb(
+            codes.next()? as u8,
+            codes.next()? as u8,
+            codes.next()? as u8,
+        )),
+        _ => None,
+    }
+}
+
+/// A run of characters that share one style.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    pub text: String,
+    pub sgr: Sgr,
+}
+
+/// One finished line, in the runs the program painted it in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Line {
+    segments: Vec<Segment>,
+}
+
+impl Line {
+    pub fn plain(text: impl Into<String>) -> Line {
+        let text = text.into();
+        match text.is_empty() {
+            true => Line::default(),
+            false => Line {
+                segments: vec![Segment {
+                    text,
+                    sgr: Sgr::default(),
+                }],
+            },
+        }
+    }
+
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    pub fn text(&self) -> String {
+        self.segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect()
+    }
+
+    pub fn width(&self) -> usize {
+        self.segments
+            .iter()
+            .map(|segment| segment.text.chars().count())
+            .sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.width() == 0
+    }
+
+    /// The first `width` characters, keeping each one's style. Cut, never reflowed.
+    pub fn clip(&self, width: usize) -> Line {
+        let mut left = width;
+        let mut segments = Vec::new();
+        for segment in &self.segments {
+            if left == 0 {
+                break;
+            }
+            let text: String = segment.text.chars().take(left).collect();
+            left -= text.chars().count();
+            segments.push(Segment {
+                text,
+                sgr: segment.sgr,
+            });
+        }
+        Line { segments }
+    }
+}
+
+impl std::fmt::Display for Line {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for segment in &self.segments {
+            f.write_str(&segment.text)?;
+        }
+        Ok(())
+    }
+}
+
+impl PartialEq<&str> for Line {
+    fn eq(&self, other: &&str) -> bool {
+        self.text() == *other
+    }
+}
+
+impl PartialEq<String> for Line {
+    fn eq(&self, other: &String) -> bool {
+        &self.text() == other
+    }
+}
+
+/// One character as the cursor left it, style included, so a rewritten line keeps the paint of
+/// whichever frame won each column.
+#[derive(Debug, Clone, Copy)]
+struct Cell {
+    character: char,
+    sgr: Sgr,
+}
+
 /// One source's output, mid-line and mid-sequence.
 #[derive(Debug, Default)]
 pub struct Filter {
     /// Undecoded bytes: the tail of a chunk that cut a UTF-8 character in half.
     tail: Vec<u8>,
     /// The line being written, as the cursor has left it.
-    line: Vec<char>,
+    line: Vec<Cell>,
     /// Where the next character lands. A carriage return puts it back to nought.
     cursor: usize,
     scan: Scan,
+    /// The style in force, which outlives the chunk that set it.
+    sgr: Sgr,
+    /// Parameters of the sequence being scanned, until its final byte says what they were for.
+    params: String,
 }
 
 /// Where in a sequence the last chunk ran out.
@@ -52,7 +226,7 @@ impl Filter {
 
     /// The lines `bytes` completed, in order. The line still being written stays here until its
     /// newline arrives, however many chunks that takes.
-    pub fn absorb(&mut self, bytes: &[u8]) -> Vec<String> {
+    pub fn absorb(&mut self, bytes: &[u8]) -> Vec<Line> {
         let text = self.decode(bytes);
         let mut lines = Vec::new();
         for character in text.chars() {
@@ -67,7 +241,10 @@ impl Filter {
                 },
                 Scan::Escape => {
                     self.scan = match character {
-                        '[' => Scan::Csi,
+                        '[' => {
+                            self.params.clear();
+                            Scan::Csi
+                        }
                         ']' => Scan::Osc {
                             after_escape: false,
                         },
@@ -79,7 +256,15 @@ impl Filter {
                 }
                 Scan::Csi => {
                     if ('\u{40}'..='\u{7e}').contains(&character) {
+                        // Only `m` says anything about paint. The rest move the cursor or ask the
+                        // terminal something, and neither is content.
+                        if character == 'm' {
+                            let params = std::mem::take(&mut self.params);
+                            self.sgr.apply(&params);
+                        }
                         self.scan = Scan::Text;
+                    } else {
+                        self.params.push(character);
                     }
                 }
                 Scan::Osc { after_escape } => {
@@ -102,7 +287,7 @@ impl Filter {
 
     /// The line still being written, for a source that has ended without a newline after it. A crash
     /// message and a prompt both arrive that way.
-    pub fn rest(&mut self) -> Option<String> {
+    pub fn rest(&mut self) -> Option<Line> {
         match self.line.is_empty() {
             true => None,
             false => Some(self.finish()),
@@ -115,15 +300,30 @@ impl Filter {
         *self = Filter::new();
     }
 
-    fn finish(&mut self) -> String {
+    /// The cells collapsed into one run per style, which is what a reader draws.
+    fn finish(&mut self) -> Line {
         self.cursor = 0;
-        self.line.drain(..).collect()
+        let mut segments: Vec<Segment> = Vec::new();
+        for cell in self.line.drain(..) {
+            match segments.last_mut() {
+                Some(last) if last.sgr == cell.sgr => last.text.push(cell.character),
+                _ => segments.push(Segment {
+                    text: String::from(cell.character),
+                    sgr: cell.sgr,
+                }),
+            }
+        }
+        Line { segments }
     }
 
     fn place(&mut self, character: char) {
+        let cell = Cell {
+            character,
+            sgr: self.sgr,
+        };
         match self.line.get_mut(self.cursor) {
-            Some(overwritten) => *overwritten = character,
-            None => self.line.push(character),
+            Some(overwritten) => *overwritten = cell,
+            None => self.line.push(cell),
         }
         self.cursor += 1;
     }
@@ -171,7 +371,7 @@ impl Filter {
 mod tests {
     use super::*;
 
-    fn all(chunks: &[&str]) -> Vec<String> {
+    fn all(chunks: &[&str]) -> Vec<Line> {
         let mut filter = Filter::new();
         chunks
             .iter()
@@ -179,20 +379,75 @@ mod tests {
             .collect()
     }
 
-    fn one(text: &str) -> String {
+    fn one(text: &str) -> Line {
         let lines = all(&[text, "\n"]);
         assert_eq!(lines.len(), 1, "{lines:?}");
         lines.into_iter().next().expect("a line")
     }
 
     #[test]
-    fn colour_and_the_rest_of_the_control_characters_never_reach_the_screen() {
+    fn the_control_characters_that_are_not_paint_never_reach_the_screen() {
         assert_eq!(one("\u{1b}[32mgreen\u{1b}[0m done"), "green done");
+        assert_eq!(one("\u{1b}[2Kcleared"), "cleared");
         assert_eq!(one("\u{1b}]0;a title\u{7}shell"), "shell");
         assert_eq!(one("\u{1b}]0;a title\u{1b}\\shell"), "shell");
         assert_eq!(one("a\tb"), "a    b");
         assert_eq!(one("\u{1b}(Bplain"), "plain");
         assert_eq!(one("bell\u{7}rung"), "bellrung");
+    }
+
+    #[test]
+    fn colour_is_kept_as_the_style_of_the_run_it_painted() {
+        let line = one("\u{1b}[32mgreen\u{1b}[0m plain");
+        assert_eq!(line, "green plain");
+        assert_eq!(
+            line.segments()
+                .iter()
+                .map(|segment| (segment.text.as_str(), segment.sgr.fg))
+                .collect::<Vec<_>>(),
+            [("green", Some(Colour::Ansi(2))), (" plain", None)]
+        );
+    }
+
+    #[test]
+    fn the_bright_half_and_the_bigger_palettes_are_read_as_written() {
+        assert_eq!(
+            one("\u{1b}[92mbright").segments()[0].sgr.fg,
+            Some(Colour::Ansi(10))
+        );
+        assert_eq!(
+            one("\u{1b}[38;5;208mindexed").segments()[0].sgr.fg,
+            Some(Colour::Indexed(208))
+        );
+        assert_eq!(
+            one("\u{1b}[38;2;255;199;92mrgb").segments()[0].sgr.fg,
+            Some(Colour::Rgb(255, 199, 92))
+        );
+        let both = one("\u{1b}[1;4mboth");
+        assert!(both.segments()[0].sgr.bold);
+        assert!(both.segments()[0].sgr.underline);
+    }
+
+    #[test]
+    fn a_rewritten_column_takes_the_paint_of_the_frame_that_won_it() {
+        let line = one("\u{1b}[31mred\r\u{1b}[32mgr");
+        assert_eq!(line, "grd");
+        assert_eq!(
+            line.segments()
+                .iter()
+                .map(|segment| (segment.text.as_str(), segment.sgr.fg))
+                .collect::<Vec<_>>(),
+            [("gr", Some(Colour::Ansi(2))), ("d", Some(Colour::Ansi(1)))]
+        );
+    }
+
+    #[test]
+    fn a_clipped_line_keeps_every_character_it_kept_painted_as_it_was() {
+        let line = one("\u{1b}[34mfour\u{1b}[0mmore").clip(6);
+        assert_eq!(line, "fourmo");
+        assert_eq!(line.segments().len(), 2);
+        assert_eq!(line.segments()[0].sgr.fg, Some(Colour::Ansi(4)));
+        assert_eq!(line.segments()[1].sgr.fg, None);
     }
 
     #[test]
@@ -259,19 +514,15 @@ mod tests {
         let mut filter = Filter::new();
         let lines = filter.absorb("x".repeat(LONGEST_LINE * 2 + 5).as_bytes());
         assert_eq!(lines.len(), 2);
-        assert!(
-            lines
-                .iter()
-                .all(|line| line.chars().count() == LONGEST_LINE)
-        );
-        assert_eq!(filter.rest().map(|rest| rest.chars().count()), Some(5));
+        assert!(lines.iter().all(|line| line.width() == LONGEST_LINE));
+        assert_eq!(filter.rest().map(|rest| rest.width()), Some(5));
     }
 
     #[test]
     fn a_source_that_ended_without_a_newline_still_gives_up_its_last_line() {
         let mut filter = Filter::new();
         assert!(filter.absorb(b"irb(main):001> ").is_empty());
-        assert_eq!(filter.rest().as_deref(), Some("irb(main):001> "));
+        assert_eq!(filter.rest(), Some(Line::plain("irb(main):001> ")));
         assert_eq!(filter.rest(), None);
     }
 

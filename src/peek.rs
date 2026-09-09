@@ -93,7 +93,7 @@ impl Source {
 pub struct Peek {
     heading: String,
     feed: Feed,
-    lines: Vec<String>,
+    lines: Vec<readable::Line>,
     filter: readable::Filter,
     top: usize,
     follow: bool,
@@ -144,7 +144,7 @@ impl Peek {
             self.lines.clear();
             self.filter.reset();
             self.top = 0;
-            self.push(RESTARTED.to_string());
+            self.push(readable::Line::plain(RESTARTED));
         }
         self.absorb(&fed);
     }
@@ -166,7 +166,7 @@ impl Peek {
 
     /// The visible lines, clipped to `width` — long lines are cut, never reflowed. Drawing is also
     /// where the viewport becomes known, so paging has a page to work with.
-    pub fn view(&mut self, height: usize, width: usize) -> Vec<String> {
+    pub fn view(&mut self, height: usize, width: usize) -> Vec<readable::Line> {
         self.viewport = height.max(1);
         self.top = if self.follow {
             self.ceiling()
@@ -176,7 +176,7 @@ impl Peek {
         self.lines[self.top..]
             .iter()
             .take(self.viewport)
-            .map(|line| clip(line, width))
+            .map(|line| line.clip(width))
             .collect()
     }
 
@@ -198,7 +198,7 @@ impl Peek {
         }
     }
 
-    fn push(&mut self, line: String) {
+    fn push(&mut self, line: readable::Line) {
         self.lines.push(line);
         if let Some(excess) = self.lines.len().checked_sub(CAPACITY) {
             self.lines.drain(..excess);
@@ -275,10 +275,6 @@ fn drain(mut pipe: impl Read + Send + 'static, sender: Sender<Vec<u8>>) {
     });
 }
 
-fn clip(line: &str, width: usize) -> String {
-    line.chars().take(width).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,7 +315,7 @@ mod tests {
         .expect("a file peek opens nothing")
     }
 
-    fn shown(peek: &mut Peek, height: usize) -> Vec<String> {
+    fn shown(peek: &mut Peek, height: usize) -> Vec<readable::Line> {
         peek.view(height, 80)
     }
 
@@ -472,7 +468,7 @@ mod tests {
         let scratch = Scratch::new("capacity");
         let mut peek = peeking(&scratch.log());
         for line in 0..CAPACITY + 50 {
-            peek.push(format!("line {line}"));
+            peek.push(readable::Line::plain(format!("line {line}")));
         }
         assert_eq!(peek.lines.len(), CAPACITY);
         assert_eq!(peek.lines[0], format!("line {}", 50));
