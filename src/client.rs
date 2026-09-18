@@ -70,6 +70,12 @@ impl Endpoint {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // A daemon auto-started by the first verb to want one would otherwise adopt that caller's
+        // environment and directory for its whole life, and hand both down to every unit of every
+        // project it goes on to serve. It belongs to no project, so it starts in none.
+        command.env_clear();
+        command.envs(crate::env::machine_level());
+        command.current_dir(Path::new("/"));
         // A daemon told to serve a scratch root has to be told which one; the spelled-out root needs
         // no argument and so the production argv stays exactly `daemon`.
         if self.root != state::root() {

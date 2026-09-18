@@ -33,8 +33,8 @@ const NO_AUTO_INSTALL: (&str, &str) = ("MISE_EXEC_AUTO_INSTALL", "false");
 /// otherwise: this sits under its `env` rather than over it.
 const TERM: (&str, &str) = ("TERM", "xterm-256color");
 
-/// The env here is the manifest's two layers only; the process layer under it is the daemon's own,
-/// added at spawn.
+/// The env here is the manifest's two layers only; the process layer under it is what `crate::env`
+/// lets through of the daemon's own, added at spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
     pub name: String,
@@ -59,7 +59,8 @@ pub fn mise_path() -> PathBuf {
 }
 
 /// Everything about the spawn except the fork, so the recipe can be read off a `Command`. Env layers
-/// innermost last: `base` — the daemon's own — then the manifest's, then ours.
+/// innermost last: `base` — the machine-level part of the daemon's own, `crate::env` for why only
+/// that part — then the manifest's, then ours.
 pub fn command<I>(spec: &Spec, mise: &Path, base: I) -> Command
 where
     I: IntoIterator<Item = (String, String)>,
@@ -80,7 +81,7 @@ where
 /// The caller owns the log's rotation. A `tty` unit never writes to `log` itself; the thread reading
 /// its terminal does.
 pub fn spawn(spec: &Spec, log: File) -> std::io::Result<Spawned> {
-    let mut command = command(spec, &mise_path(), std::env::vars());
+    let mut command = command(spec, &mise_path(), crate::env::machine_level());
     command.stdin(Stdio::null());
     let pty = match spec.tty {
         false => {
