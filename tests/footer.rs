@@ -197,7 +197,7 @@ fn a_notice_is_read_in_full_at_a_hundred_columns_too() {
         Some(NOT_A_REPO),
         "{screen}"
     );
-    assert!(keys_line(&screen).contains("O overlay"), "{screen}");
+    assert!(keys_line(&screen).contains("O pane"), "{screen}");
     assert!(
         heading(&screen).contains(&format!("daemon {VERSION}")),
         "{screen}"

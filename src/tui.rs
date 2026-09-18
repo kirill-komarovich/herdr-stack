@@ -20,7 +20,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::client::{Endpoint, Link, Target};
 use crate::form::Form;
@@ -219,13 +219,8 @@ fn event_loop() -> io::Result<()> {
                 }
                 Err(complaint) => notice = Some(complaint),
             },
-            KeyCode::Char('O') => match open_overlay(view.as_ref(), &rows, cursor) {
-                // The overlay outlives us; the popup would own the keyboard if it stayed.
-                Ok(()) => return Ok(()),
-                Err(complaint) => notice = Some(complaint),
-            },
-            KeyCode::Char('A') => match open_attach(view.as_ref(), &rows, cursor) {
-                // The pane wants the keyboard, and only one of us can have it.
+            KeyCode::Char('O') => match open_pane(view.as_ref(), &rows, cursor) {
+                // The pane outlives us and may want the keyboard, and only one of us can have it.
                 Ok(()) => return Ok(()),
                 Err(complaint) => notice = Some(complaint),
             },
@@ -442,23 +437,36 @@ fn open_peek(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Peek, S
     peek::Source::of(&Store::at(state::root()), project, row.kind, &row.name)?.open()
 }
 
-/// Herdr runs the pane the manifest declares; all this call adds is which log it should follow. No
+/// Herdr runs the pane the manifest declares; all a request adds is what that pane is to open onto. No
 /// `cwd` is passed: the declared argv is relative, and naming a cwd is measured to resolve it there
 /// instead of in the plugin root, where the binary actually is.
-fn open_overlay(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(), String> {
+fn open_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(), String> {
+    let params = pane_request(view, rows, cursor)?;
+    crate::herdr::request("plugin.pane.open", params)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// What `O` opens on the row under the cursor: a running `tty` unit is one you can type at, so it gets
+/// the pane that types, and everything else — a unit on pipes, a stopped one, a docker service — has
+/// only its log to show. Why a row cannot be typed at is not worth saying when there is a log to show
+/// instead; the refusal a row does get is the log's own.
+fn pane_request(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Value, String> {
+    match attachable(view, rows, cursor) {
+        Ok((project, unit)) => Ok(attach_pane(project, unit)),
+        Err(_) => log_pane(view, rows, cursor),
+    }
+}
+
+fn log_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Value, String> {
     let view = view.ok_or_else(|| "no project here".to_string())?;
     let path = log_path(&Store::at(state::root()), view, rows, cursor)?;
-    crate::herdr::request(
-        "plugin.pane.open",
-        json!({
-            "plugin_id": tail::PLUGIN_ID,
-            "entrypoint": tail::ENTRYPOINT,
-            "env": {tail::LOG_ENV: path.to_string_lossy()},
-            "focus": true,
-        }),
-    )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
+    Ok(json!({
+        "plugin_id": tail::PLUGIN_ID,
+        "entrypoint": tail::ENTRYPOINT,
+        "env": {tail::LOG_ENV: path.to_string_lossy()},
+        "focus": true,
+    }))
 }
 
 /// The unit the row under the cursor would be typed at, or why there is none. Decided before anything
@@ -498,24 +506,16 @@ fn attachable<'a>(
     Ok((project, unit))
 }
 
-/// The attach pane `A` opens. Herdr runs the pane the manifest declares; all this call adds is which
-/// unit it should type at.
-fn open_attach(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(), String> {
-    let (project, unit) = attachable(view, rows, cursor)?;
-    crate::herdr::request(
-        "plugin.pane.open",
-        json!({
-            "plugin_id": tail::PLUGIN_ID,
-            "entrypoint": crate::attach::ENTRYPOINT,
-            "env": {
-                crate::attach::PROJECT_ENV: project.root.to_string_lossy(),
-                crate::attach::UNIT_ENV: unit.name,
-            },
-            "focus": true,
-        }),
-    )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
+fn attach_pane(project: &Project, unit: &LocalUnit) -> Value {
+    json!({
+        "plugin_id": tail::PLUGIN_ID,
+        "entrypoint": crate::attach::ENTRYPOINT,
+        "env": {
+            crate::attach::PROJECT_ENV: project.root.to_string_lossy(),
+            crate::attach::UNIT_ENV: unit.name,
+        },
+        "focus": true,
+    })
 }
 
 const LAUNCHING: &str = "splitting a pane and starting an agent…";
@@ -675,11 +675,8 @@ fn keys(view: Option<&View>, dim: Style) -> Line<'static> {
                 ("x", "stop"),
                 ("r", "restart"),
                 ("L", "log"),
-                ("O", "overlay"),
+                ("O", "pane"),
             ]);
-            if view.has_terminals() {
-                hints.push(("A", "attach"));
-            }
             if view.has_repos() {
                 hints.push(("\u{21b9}", "repo"));
             }
@@ -1057,6 +1054,29 @@ mod tests {
         let (project, unit) = attachable(Some(&view), &rows, 1).expect("a unit to type at");
         assert_eq!(unit.name, "console");
         assert_eq!(project.root, view.focused().root);
+    }
+
+    #[test]
+    fn the_pane_key_types_at_a_running_terminal_unit_and_follows_the_log_of_anything_else() {
+        let view = view(
+            "[local.console]\ncmd = [\"bin/rails\", \"c\"]\ntty = true\n\
+             [local.vite]\ncmd = [\"bin/vite\"]\n",
+        );
+        let mut rows = shown(&view);
+        running(&mut rows, "console");
+        running(&mut rows, "vite");
+
+        let params = pane_request(Some(&view), &rows, 0).expect("a terminal to type at");
+        assert_eq!(params["entrypoint"], crate::attach::ENTRYPOINT);
+        assert_eq!(params["env"][crate::attach::UNIT_ENV], "console");
+        assert_eq!(
+            params["env"][crate::attach::PROJECT_ENV],
+            view.focused().root.to_string_lossy().as_ref()
+        );
+
+        // Running, but on a pipe: what it has to show is its log, and so is what it refuses with.
+        let complaint = pane_request(Some(&view), &rows, 1).unwrap_err();
+        assert!(complaint.contains("no log yet for vite"), "{complaint}");
     }
 
     #[test]
