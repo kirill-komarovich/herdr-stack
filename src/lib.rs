@@ -5,6 +5,7 @@ pub mod client;
 pub mod daemon;
 pub mod docker;
 pub mod env;
+pub mod errand;
 pub mod form;
 pub mod herdr;
 pub mod local;

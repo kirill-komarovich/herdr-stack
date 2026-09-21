@@ -327,12 +327,8 @@ impl Link {
         project: &Project,
         target: &Target,
     ) -> Result<Option<String>, String> {
-        let params = json!({"project": describe(project), "unit": spell(target)});
-        let reply = self.request(method, params)?;
-        Ok(reply
-            .get("note")
-            .and_then(Value::as_str)
-            .map(str::to_string))
+        let reply = self.request(method, verb_params(project, target))?;
+        Ok(note_of(&reply))
     }
 
     /// Hands this connection over to the unit's terminal: what the daemon writes from here on is what
@@ -376,16 +372,8 @@ impl Link {
 
     /// Keyed by unit key, so a local and a docker unit of one name stay apart.
     pub fn status(&mut self, project: &Project) -> Result<BTreeMap<String, Status>, String> {
-        let params = json!({"project": describe(project), "docker": declared(project)});
-        let reply = self.request("status", params)?;
-        let units = reply
-            .get("units")
-            .and_then(Value::as_object)
-            .ok_or("status: no units")?;
-        units
-            .iter()
-            .map(|(unit, status)| Status::read(status).map(|status| (unit.clone(), status)))
-            .collect()
+        let reply = self.request("status", status_params(project))?;
+        statuses_of(&reply)
     }
 
     /// One line for the footer: what is running the stack, or — under skew — which process to kill.
@@ -404,6 +392,34 @@ impl Link {
             format!("daemon {version}  pid {pid}")
         }
     }
+}
+
+/// What crosses the wire for a status read and for a verb. Spelled out away from the connection so a
+/// caller holding the manifest can build the request and a thread holding the socket can send it.
+pub fn status_params(project: &Project) -> Value {
+    json!({"project": describe(project), "docker": declared(project)})
+}
+
+pub fn verb_params(project: &Project, target: &Target) -> Value {
+    json!({"project": describe(project), "unit": spell(target)})
+}
+
+pub fn statuses_of(reply: &Value) -> Result<BTreeMap<String, Status>, String> {
+    let units = reply
+        .get("units")
+        .and_then(Value::as_object)
+        .ok_or("status: no units")?;
+    units
+        .iter()
+        .map(|(unit, status)| Status::read(status).map(|status| (unit.clone(), status)))
+        .collect()
+}
+
+pub fn note_of(reply: &Value) -> Option<String> {
+    reply
+        .get("note")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn describe(project: &Project) -> Value {

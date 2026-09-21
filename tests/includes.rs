@@ -136,9 +136,15 @@ fn stepped_in(line: &str, name: &str) -> bool {
 fn row_of(screen: &str, name: &str) -> String {
     screen
         .lines()
-        .find(|line| line.contains(name))
+        .find(|line| named(line, name))
         .unwrap_or_else(|| panic!("no row for {name} on screen:\n{screen}"))
         .to_string()
+}
+
+/// A row is the one a name sits on only when the name is its own: accounts's `storefront` service
+/// carries `docker compose run --rm storefront rails …` in its note, which is not the `rails` row.
+fn named(line: &str, name: &str) -> bool {
+    line.split_whitespace().nth(1) == Some(name.trim())
 }
 
 /// Waits for the row `name` sits on to carry `needle`, so one row reading `up` is never mistaken for
@@ -149,7 +155,7 @@ fn wait_row(pty: &mut Pty, name: &str, needle: &str) -> String {
         let screen = pty.screen();
         if screen
             .lines()
-            .any(|line| line.contains(name) && line.contains(needle))
+            .any(|line| named(line, name) && line.contains(needle))
         {
             return row_of(&screen, name);
         }

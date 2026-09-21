@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{
@@ -22,7 +22,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use serde_json::{Value, json};
 
-use crate::client::{Endpoint, Link, Target};
+use crate::client::{self, Endpoint, Link, Target};
+use crate::errand::{Answer, Errands};
 use crate::form::Form;
 use crate::manifest::{LocalUnit, Project};
 use crate::peek::{self, Peek};
@@ -56,6 +57,14 @@ const NO_REPO_TERMINAL: &str = "a repo row is not a unit; expand it with tab";
 /// How long the loop waits for a keystroke while a peek is open. Following has to happen without one,
 /// and an idle peek costs one wakeup a tick and no redraw, because an unchanged frame writes nothing.
 const PEEK_POLL: Duration = Duration::from_millis(120);
+/// The same, with the rows up. An uptime is counted in whole seconds and nothing else on the screen
+/// moves on its own, so this is what keeps a row from ever being a second stale. An idle popup costs
+/// four wakeups a second and no redraw: an unchanged frame writes nothing.
+const ROWS_POLL: Duration = Duration::from_millis(250);
+/// How often the daemon is asked what is running. It is a `compose ps` per manifest on screen, so it
+/// keeps a beat of its own rather than riding the frames: the uptimes in between are grown from the
+/// last answer, and only a state waits for the next one.
+const BEAT: Duration = Duration::from_secs(2);
 const PEEK_KEYS: &str = "esc rows   ↑↓ scroll   ⇞⇟ page   f follow";
 
 pub fn run() -> io::Result<()> {
@@ -74,9 +83,13 @@ pub fn run() -> io::Result<()> {
 
 fn event_loop() -> io::Result<()> {
     let mut terminal = ratatui::Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    // The daemon first, then the project. The link is held for the popup's whole life, which is also what keeps an idle daemon from exiting underneath it.
-    let mut link = Endpoint::spelled_out().open();
+    // The daemon first, then the project. The link is handed to the thread that runs the errands and
+    // held there for the popup's whole life, which is also what keeps an idle daemon from exiting
+    // underneath it.
+    let endpoint = Endpoint::spelled_out();
+    let link = endpoint.open();
     let daemon = daemon_report(&link);
+    let mut errands = Errands::keeping(link, endpoint);
     let Resolution {
         project,
         complaint: trouble,
@@ -90,25 +103,37 @@ fn event_loop() -> io::Result<()> {
     let mut peek: Option<Peek> = None;
     let mut cursor = 0;
     let mut refresh = true;
+    let mut last_beat = Instant::now();
 
     loop {
-        // Nothing ticks: the states are re-read once per keystroke, which is the only moment anything
-        // is redrawn anyway. A peek scrolling is not such a moment — a status read runs `compose ps`,
-        // which no scroll may pay for.
-        if refresh {
-            if let (Some(view), Ok(link)) = (&view, &mut link) {
+        // Nothing is read behind a peek or a form: they cover the very rows a read would refresh, and
+        // a `compose ps` nobody can see is one nobody should pay for.
+        let covered = peek.is_some() || form.is_some();
+        if (refresh || last_beat.elapsed() >= BEAT) && !covered && !errands.reading() {
+            if let Some(view) = &view {
                 // One read per manifest on screen, and none for a repo still folded: the states of a
                 // project nobody is looking at are not worth a `compose ps`.
                 for (owner, project) in view.on_screen() {
-                    match link.status(project) {
-                        Ok(fresh) => {
-                            statuses.insert(owner, fresh);
-                        }
-                        Err(complaint) => notice = Some(complaint),
-                    }
+                    errands.read(owner, client::status_params(project));
                 }
             }
+            last_beat = Instant::now();
             refresh = false;
+        }
+        for answer in errands.answered() {
+            match answer {
+                Answer::Read(owner, Ok(fresh)) => statuses.insert(owner, fresh),
+                // A verb having been performed is the one thing worth a read off the beat, and its
+                // note — or the silence of a verb that simply worked — replaces what it was announced
+                // with.
+                Answer::Note(Ok(note)) => {
+                    notice = note;
+                    refresh = true;
+                }
+                Answer::Read(_, Err(complaint)) | Answer::Note(Err(complaint)) => {
+                    notice = Some(complaint);
+                }
+            }
         }
         let rows = match &view {
             Some(view) => view.rows(&statuses),
@@ -127,12 +152,16 @@ fn event_loop() -> io::Result<()> {
             (None, Some(form)) => draw_form(frame, form, notice.as_deref()),
             (None, None) => draw(frame, view.as_ref(), &rows, cursor, &said, &daemon),
         })?;
-        // A peek waits only so long for a keystroke, so following happens without one. The rows have
-        // nothing to show that a keystroke did not cause, and wait for one for as long as it takes.
-        if let Some(open) = peek.as_mut()
-            && !event::poll(PEEK_POLL)?
-        {
-            open.pump();
+        // Neither screen waits on a keystroke for longer than it has something of its own to do: a
+        // peek follows what is being written to its file, and the rows grow their uptimes.
+        let patience = match peek {
+            Some(_) => PEEK_POLL,
+            None => ROWS_POLL,
+        };
+        if !event::poll(patience)? {
+            if let Some(open) = peek.as_mut() {
+                open.pump();
+            }
             continue;
         }
         // Kitty keyboard enhancement, when the host terminal has it on, reports releases too.
@@ -210,7 +239,7 @@ fn event_loop() -> io::Result<()> {
                 };
             }
             KeyCode::Char(verb @ ('s' | 'x' | 'r')) => {
-                notice = perform(verb, &mut link, view.as_ref(), &rows, cursor);
+                notice = perform(verb, &mut errands, view.as_ref(), &rows, cursor);
             }
             KeyCode::Char('L') => match open_peek(view.as_ref(), &rows, cursor) {
                 Ok(open) => {
@@ -367,10 +396,12 @@ fn selected<'a>(
     Target::of(project, row.kind, &row.name).map(|target| (project, target))
 }
 
-/// Every verb is a request to the daemon; the popup itself spawns nothing and signals nothing.
+/// Every verb is a request to the daemon; the popup itself spawns nothing and signals nothing. It is
+/// posted rather than made, so the sentence it returns is what is under way rather than how it went —
+/// the daemon's own answer replaces it whenever it arrives.
 fn perform(
     verb: char,
-    link: &mut Result<Link, String>,
+    errands: &mut Errands,
     view: Option<&View>,
     rows: &[Row],
     cursor: usize,
@@ -380,19 +411,13 @@ fn perform(
         Ok(selected) => selected,
         Err(complaint) => return Some(complaint),
     };
-    let link = match link {
-        Ok(link) => link,
-        Err(complaint) => return Some(complaint.clone()),
+    let (method, said) = match verb {
+        's' => ("start", "starting"),
+        'x' => ("stop", "stopping"),
+        _ => ("restart", "restarting"),
     };
-    let asked = match verb {
-        's' => link.start(project, &target),
-        'x' => link.stop(project, &target),
-        _ => link.restart(project, &target),
-    };
-    match asked {
-        Ok(note) => note,
-        Err(complaint) => Some(complaint),
-    }
+    errands.verb(method, client::verb_params(project, &target));
+    Some(format!("{said} {}\u{2026}", rows.get(cursor)?.name))
 }
 
 /// The log the row under the cursor would overlay, or why it has none. Only our own local units keep

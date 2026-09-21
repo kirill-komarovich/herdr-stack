@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::manifest::{Include, Project};
 use crate::project::MANIFEST_NAME;
@@ -27,8 +28,53 @@ pub enum Owner {
     Included(usize),
 }
 
-/// What the daemon last said, per manifest.
-pub type Statuses = BTreeMap<Owner, BTreeMap<String, Status>>;
+/// What the daemon last said, per manifest, and when it said it. A read costs a `compose ps`, so the
+/// popup takes few of them and grows the uptimes itself in between: a clock that only moves when the
+/// daemon is asked reads as a frozen one.
+#[derive(Debug, Default)]
+pub struct Statuses {
+    heard: BTreeMap<Owner, Heard>,
+}
+
+#[derive(Debug)]
+struct Heard {
+    at: Instant,
+    units: BTreeMap<String, Status>,
+}
+
+impl Statuses {
+    pub fn new() -> Statuses {
+        Statuses::default()
+    }
+
+    pub fn insert(&mut self, owner: Owner, units: BTreeMap<String, Status>) {
+        self.heard.insert(
+            owner,
+            Heard {
+                at: Instant::now(),
+                units,
+            },
+        );
+    }
+
+    /// One manifest's statuses with every uptime carried forward to now. Only a unit the daemon timed
+    /// has one to carry: a stopped or crashed unit shows how it ended, which does not age.
+    fn aged(&self, owner: Owner) -> BTreeMap<String, Status> {
+        let Some(heard) = self.heard.get(&owner) else {
+            return BTreeMap::new();
+        };
+        let since = heard.at.elapsed();
+        heard
+            .units
+            .iter()
+            .map(|(unit, status)| {
+                let mut status = status.clone();
+                status.uptime = status.uptime.map(|uptime| uptime + since);
+                (unit.clone(), status)
+            })
+            .collect()
+    }
+}
 
 /// One `[includes.*]` entry, resolved: either the repo's own manifest or the reason there is nothing
 /// to unfold. Both render a row — an include that cannot be read says so where it stands rather than
@@ -126,15 +172,18 @@ impl View {
     }
 
     pub fn rows(&self, statuses: &Statuses) -> Vec<Row> {
-        let nothing = BTreeMap::new();
-        let known = |owner| statuses.get(&owner).unwrap_or(&nothing);
-        let mut rows = rows::unit_rows(&self.focused, known(Owner::Focused), Owner::Focused, false);
+        let mut rows = rows::unit_rows(
+            &self.focused,
+            &statuses.aged(Owner::Focused),
+            Owner::Focused,
+            false,
+        );
         for (index, included) in self.included.iter().enumerate() {
             let owner = Owner::Included(index);
             let expanded = self.expanded.contains(&index);
             rows.push(repo_row(included, expanded, owner));
             if let (true, Ok(project)) = (expanded, &included.project) {
-                rows.extend(rows::unit_rows(project, known(owner), owner, true));
+                rows.extend(rows::unit_rows(project, &statuses.aged(owner), owner, true));
             }
         }
         rows
@@ -243,8 +292,35 @@ mod tests {
     use super::*;
 
     use std::path::Path;
+    use std::time::Duration;
 
-    use crate::unit::{self, State};
+    use crate::unit::{self, Exit, State};
+
+    #[test]
+    fn an_uptime_grows_between_reads_and_an_exit_stays_what_it_was() {
+        let mut running = Status::of(State::Up);
+        running.uptime = Some(Duration::from_secs(41));
+        let mut crashed = Status::of(State::Dead);
+        crashed.exit = Some(Exit::Code(1));
+
+        let mut statuses = Statuses::new();
+        statuses.insert(
+            Owner::Focused,
+            BTreeMap::from([
+                (unit::key(unit::LOCAL, "rails"), running),
+                (unit::key(unit::LOCAL, "vite"), crashed),
+            ]),
+        );
+        std::thread::sleep(Duration::from_millis(60));
+
+        let aged = statuses.aged(Owner::Focused);
+        assert!(
+            aged["local-rails"].uptime.expect("an uptime") > Duration::from_secs(41),
+            "the uptime stood still between reads"
+        );
+        assert_eq!(aged["local-vite"].uptime, None);
+        assert_eq!(aged["local-vite"].timing(), "exit 1");
+    }
 
     struct Repos(PathBuf);
 
@@ -446,10 +522,11 @@ mod tests {
         let rows = view.rows(&Statuses::new());
         view.toggle(&rows[1]).expect("the repo unfolds");
 
-        let statuses = Statuses::from([(
+        let mut statuses = Statuses::new();
+        statuses.insert(
             Owner::Included(0),
             BTreeMap::from([(unit::key(unit::LOCAL, "rails"), Status::of(State::Up))]),
-        )]);
+        );
         let rows = view.rows(&statuses);
         assert_eq!(
             rows[0].state, "down",
