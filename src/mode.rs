@@ -19,7 +19,7 @@ pub enum Mode {
     Daemon {
         root: PathBuf,
     },
-    /// The overlay pane's mode. The log to follow arrives in the environment rather than in argv,
+    /// The log pane's mode. The log to follow arrives in the environment rather than in argv,
     /// because the manifest declares one entrypoint for every unit.
     Tail,
     /// The attach pane's mode. Which unit to type at arrives in the environment for the same reason.

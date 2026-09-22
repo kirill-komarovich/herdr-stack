@@ -8,7 +8,7 @@ min_herdr_version = "0.8.0"
 [[panes]]
 id = "tail"
 title = "dev-stack log"
-placement = "overlay"
+placement = "tab"
 command = ["./target/release/herdr-dev", "tail"]
 
 # The unit to type at arrives as HERDR_DEV_PROJECT and HERDR_DEV_UNIT at open time, for the same
@@ -16,5 +16,5 @@ command = ["./target/release/herdr-dev", "tail"]
 [[panes]]
 id = "attach"
 title = "dev-stack attach"
-placement = "overlay"
+placement = "tab"
 command = ["./target/release/herdr-dev", "attach"]

@@ -466,32 +466,59 @@ fn open_peek(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Peek, S
 /// `cwd` is passed: the declared argv is relative, and naming a cwd is measured to resolve it there
 /// instead of in the plugin root, where the binary actually is.
 fn open_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(), String> {
-    let params = pane_request(view, rows, cursor)?;
-    crate::herdr::request("plugin.pane.open", params)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    let (params, label) = pane_request(view, rows, cursor)?;
+    let opened =
+        crate::herdr::request("plugin.pane.open", params).map_err(|error| error.to_string())?;
+    rename_tab(&opened, &label);
+    Ok(())
+}
+
+/// The manifest declares one title for every unit, so the tab a unit opens in is renamed after it once
+/// it exists. A refusal is dropped: the tab is open and we are about to hand the screen over to it.
+fn rename_tab(opened: &Value, label: &str) {
+    let Some(tab) = tab_opened(opened) else {
+        return;
+    };
+    let _ = crate::herdr::request("tab.rename", json!({"tab_id": tab, "label": label}));
+}
+
+fn tab_opened(opened: &Value) -> Option<&str> {
+    opened
+        .pointer("/plugin_pane/pane/tab_id")
+        .and_then(Value::as_str)
 }
 
 /// What `O` opens on the row under the cursor: a running `tty` unit is one you can type at, so it gets
 /// the pane that types, and everything else — a unit on pipes, a stopped one, a docker service — has
 /// only its log to show. Why a row cannot be typed at is not worth saying when there is a log to show
 /// instead; the refusal a row does get is the log's own.
-fn pane_request(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Value, String> {
+fn pane_request(
+    view: Option<&View>,
+    rows: &[Row],
+    cursor: usize,
+) -> Result<(Value, String), String> {
     match attachable(view, rows, cursor) {
-        Ok((project, unit)) => Ok(attach_pane(project, unit)),
+        Ok((project, unit)) => Ok((attach_pane(project, unit), unit.name.clone())),
         Err(_) => log_pane(view, rows, cursor),
     }
 }
 
-fn log_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Value, String> {
+fn log_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(Value, String), String> {
     let view = view.ok_or_else(|| "no project here".to_string())?;
     let path = log_path(&Store::at(state::root()), view, rows, cursor)?;
-    Ok(json!({
-        "plugin_id": tail::PLUGIN_ID,
-        "entrypoint": tail::ENTRYPOINT,
-        "env": {tail::LOG_ENV: path.to_string_lossy()},
-        "focus": true,
-    }))
+    let name = rows
+        .get(cursor)
+        .map(|row| row.name.clone())
+        .unwrap_or_default();
+    Ok((
+        json!({
+            "plugin_id": tail::PLUGIN_ID,
+            "entrypoint": tail::ENTRYPOINT,
+            "env": {tail::LOG_ENV: path.to_string_lossy()},
+            "focus": true,
+        }),
+        name,
+    ))
 }
 
 /// The unit the row under the cursor would be typed at, or why there is none. Decided before anything
@@ -1091,7 +1118,8 @@ mod tests {
         running(&mut rows, "console");
         running(&mut rows, "vite");
 
-        let params = pane_request(Some(&view), &rows, 0).expect("a terminal to type at");
+        let (params, label) = pane_request(Some(&view), &rows, 0).expect("a terminal to type at");
+        assert_eq!(label, "console");
         assert_eq!(params["entrypoint"], crate::attach::ENTRYPOINT);
         assert_eq!(params["env"][crate::attach::UNIT_ENV], "console");
         assert_eq!(
@@ -1102,6 +1130,20 @@ mod tests {
         // Running, but on a pipe: what it has to show is its log, and so is what it refuses with.
         let complaint = pane_request(Some(&view), &rows, 1).unwrap_err();
         assert!(complaint.contains("no log yet for vite"), "{complaint}");
+    }
+
+    #[test]
+    fn the_tab_a_pane_opened_in_is_read_back_out_of_herdrs_answer() {
+        let opened = json!({
+            "type": "plugin_pane_opened",
+            "plugin_pane": {
+                "plugin_id": tail::PLUGIN_ID,
+                "entrypoint": tail::ENTRYPOINT,
+                "pane": {"pane_id": "w7:p9", "tab_id": "w7:t3", "workspace_id": "w7"},
+            },
+        });
+        assert_eq!(tab_opened(&opened), Some("w7:t3"));
+        assert_eq!(tab_opened(&json!({"type": "plugin_pane_opened"})), None);
     }
 
     #[test]

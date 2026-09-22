@@ -2,7 +2,7 @@
 //!
 //! A unit's log is truncated at spawn and the previous generation is renamed aside, so a follower
 //! that only ever moved forward would sit past the end of a fresh file and go silent for the rest of
-//! the run. Both readers of a log need the same rule — this overlay and the in-place peek — so it
+//! the run. Both readers of a log need the same rule — this pane and the in-place peek — so it
 //! lives here rather than in either of them.
 
 use std::fs::File;
@@ -282,7 +282,7 @@ mod tests {
         assert_eq!(declared, [ENTRYPOINT, crate::attach::ENTRYPOINT]);
         for pane in panes {
             let id = pane["id"].as_str().expect("an id");
-            assert_eq!(pane["placement"].as_str(), Some("overlay"));
+            assert_eq!(pane["placement"].as_str(), Some("tab"));
             let command: Vec<&str> = pane["command"]
                 .as_array()
                 .expect("command")
