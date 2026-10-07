@@ -12,7 +12,7 @@
 //! daemon can read, and the one that went is dead either way.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -32,6 +32,19 @@ pub const RESTORE_WINDOW: Duration = Duration::from_secs(10 * 60);
 /// `SIGKILL` cannot be ignored, so this is scheduling slack rather than a grace period.
 const REAP_WAIT: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);
+
+/// What a dev server reads once at boot and never again: a change to any of these is invisible to
+/// the running process until it is restarted.
+const CONFIG_FILES: [&str; 7] = [
+    "package.json",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "Gemfile.lock",
+    "mise.toml",
+    ".env",
+];
+const CONFIG_PREFIXES: [&str; 1] = ["vite.config."];
 
 /// The answer to a verb: done, or done with something the footer should say.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +75,7 @@ struct Handle {
 struct Live {
     pid: u32,
     started_at: SystemTime,
+    cwd: PathBuf,
     /// Set before the group is signalled, so the reaping thread knows a `down` from a `dead`.
     stopping: bool,
     /// A `tty` unit's terminal, for as long as the unit is there to type at.
@@ -144,6 +158,7 @@ impl Supervisor {
             Live {
                 pid: spawned.pid,
                 started_at: spawned.started_at,
+                cwd: spec.cwd.clone(),
                 stopping: false,
                 terminal: spawned.terminal,
             },
@@ -213,7 +228,7 @@ impl Supervisor {
                         state: State::Up,
                         uptime: live.started_at.elapsed().ok(),
                         exit: None,
-                        note: None,
+                        note: changed_since(&live.cwd, live.started_at),
                         ports: Vec::new(),
                     },
                 );
@@ -462,6 +477,35 @@ fn remembered(record: &Record) -> Status {
         note: None,
         ports: Vec::new(),
     }
+}
+
+/// Read on every status, so it is one directory listing and a stat per match, never a file read.
+fn changed_since(cwd: &Path, started_at: SystemTime) -> Option<String> {
+    let mut changed: Vec<String> = std::fs::read_dir(cwd)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let config = CONFIG_FILES.contains(&name.as_str())
+                || CONFIG_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix));
+            if !config {
+                return None;
+            }
+            // Followed rather than lstat'd: a symlinked `.env` changes where it points to.
+            let modified = std::fs::metadata(entry.path()).ok()?.modified().ok()?;
+            (modified > started_at).then_some(name)
+        })
+        .collect();
+    if changed.is_empty() {
+        return None;
+    }
+    changed.sort();
+    Some(format!(
+        "config changed since start: {}",
+        changed.join(", ")
+    ))
 }
 
 /// A leftover is another daemon's child, so there is no `wait()` to lean on: the group emptying is
@@ -892,6 +936,57 @@ mod tests {
                 .count(),
             2,
             "a restart keeps exactly one previous generation"
+        );
+
+        supervisor.kill_all();
+    }
+
+    fn touch(path: &Path, at: SystemTime) {
+        let file = std::fs::File::create(path).expect("create");
+        file.set_modified(at).expect("set mtime");
+    }
+
+    #[test]
+    fn only_config_written_after_the_start_is_named_and_in_a_stable_order() {
+        let scratch = Scratch::new("config");
+        let project = scratch.project("storefront");
+        let started_at = SystemTime::now();
+        let before = started_at - Duration::from_secs(60);
+        let after = started_at + Duration::from_secs(60);
+        touch(&project.path.join("mise.toml"), before);
+        touch(&project.path.join("vite.config.ts"), after);
+        touch(&project.path.join("package.json"), after);
+        touch(&project.path.join("README.md"), after);
+
+        assert_eq!(
+            changed_since(&project.path, started_at).as_deref(),
+            Some("config changed since start: package.json, vite.config.ts")
+        );
+        assert_eq!(changed_since(&project.path, after), None);
+    }
+
+    #[test]
+    fn a_running_unit_whose_config_changed_after_it_started_says_so_in_its_note() {
+        let scratch = Scratch::new("restale");
+        let supervisor = scratch.supervisor(Duration::from_millis(200));
+        let project = scratch.project("storefront");
+        touch(&project.path.join("package.json"), SystemTime::now());
+        let key = unit::key(unit::LOCAL, "vite");
+
+        supervisor
+            .start(&project, &spec("vite", &["sleep", "20"], &project.path))
+            .expect("start");
+        assert_eq!(supervisor.status(&project)[&key].note, None);
+
+        touch(
+            &project.path.join("package.json"),
+            SystemTime::now() + Duration::from_secs(1),
+        );
+        let status = &supervisor.status(&project)[&key];
+        assert_eq!(status.state, State::Up);
+        assert_eq!(
+            status.note.as_deref(),
+            Some("config changed since start: package.json")
         );
 
         supervisor.kill_all();
