@@ -19,7 +19,7 @@ mod support;
 use support::{Pty, answer_snapshots};
 
 const DOWN: &str = "j";
-const TAB: &str = "\t";
+const RIGHT: &str = "\u{1b}[C";
 const NARROW: u16 = 80;
 const MIDDLING: u16 = 100;
 const VERSION: &str = "9.9.9";
@@ -174,7 +174,7 @@ fn a_notice_too_long_for_the_keys_line_is_read_in_full_at_eighty_columns() {
     );
     // The keys and the daemon are both still there to be found.
     let keys = keys_line(&screen);
-    assert!(keys.contains("L log") && keys.contains("↹ repo"), "{keys}");
+    assert!(keys.contains("L log") && keys.contains("←→ repo"), "{keys}");
     assert!(keys.chars().count() <= NARROW as usize, "{keys}");
     assert!(
         heading(&screen).contains(&format!("daemon {VERSION}")),
@@ -190,7 +190,7 @@ fn a_notice_is_read_in_full_at_a_hundred_columns_too() {
     stage.look_at(&repo, MIDDLING, PROTOCOL);
     stage.pty().wait_for("db");
 
-    stage.pty().press(TAB);
+    stage.pty().press(RIGHT);
     let screen = stage.pty().wait_for(NOT_A_REPO);
     assert_eq!(
         notice_line(&screen, NOT_A_REPO).as_deref(),
@@ -242,7 +242,7 @@ fn the_row_list_keeps_its_last_row_until_a_notice_needs_one() {
         "nothing was asked for, so nothing is said:\n{full}"
     );
 
-    stage.pty().press(TAB);
+    stage.pty().press(RIGHT);
     let screen = stage.pty().wait_for(NOT_A_REPO);
     assert!(
         !screen.contains("u22"),
@@ -283,7 +283,7 @@ fn a_manifests_own_complaints_are_said_in_the_footer() {
     );
 
     stage.pty().press(DOWN);
-    stage.pty().press(TAB);
+    stage.pty().press(RIGHT);
     let unfolded = stage.pty().wait_for("accounts: ");
     let said = read_back(&unfolded);
     assert_eq!(said.len(), 2, "{unfolded}");

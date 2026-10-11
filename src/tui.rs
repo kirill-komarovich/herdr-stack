@@ -49,10 +49,10 @@ const INDENT: &str = "  ";
 const NOTICE_MARK: &str = "! ";
 const DAEMON_SKEWED: &str = "daemon skewed";
 const NO_DAEMON: &str = "no daemon";
-const NO_VERB: &str = "s, x and r act on unit rows; ↹ unfolds a repo";
+const NO_VERB: &str = "s, x and r act on unit rows; → unfolds a repo";
 const NO_DOCKER_LOG: &str = "a docker service has no log file of ours to overlay";
 const NO_DOCKER_TERMINAL: &str = "a docker service has no terminal of ours to type at";
-const NO_REPO_TERMINAL: &str = "a repo row is not a unit; expand it with tab";
+const NO_REPO_TERMINAL: &str = "a repo row is not a unit; expand it with →";
 
 /// How long the loop waits for a keystroke while a peek is open. Following has to happen without one,
 /// and an idle peek costs one wakeup a tick and no redraw, because an unchanged frame writes nothing.
@@ -232,12 +232,22 @@ fn event_loop() -> io::Result<()> {
             }
             KeyCode::Up | KeyCode::Char('k') => cursor = stepped(cursor, -1, rows.len()),
             KeyCode::Down | KeyCode::Char('j') => cursor = stepped(cursor, 1, rows.len()),
-            KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Right | KeyCode::Char('l') => {
                 notice = match (&mut view, rows.get(cursor)) {
-                    (Some(view), Some(row)) => view.toggle(row).err(),
+                    (Some(view), Some(row)) => view.unfold(row).err(),
                     _ => Some(crate::view::NOT_A_REPO.to_string()),
                 };
             }
+            KeyCode::Left | KeyCode::Char('h') => match (&mut view, rows.get(cursor)) {
+                (Some(view), Some(row)) => match view.fold(row) {
+                    Ok(()) => {
+                        cursor = repo_row_of(&rows, cursor);
+                        notice = None;
+                    }
+                    Err(complaint) => notice = Some(complaint),
+                },
+                _ => notice = Some(crate::view::NOT_A_REPO.to_string()),
+            },
             KeyCode::Char(verb @ ('s' | 'x' | 'r')) => {
                 notice = perform(verb, &mut errands, view.as_ref(), &rows, cursor);
             }
@@ -730,7 +740,7 @@ fn keys(view: Option<&View>, dim: Style) -> Line<'static> {
                 ("O", "pane"),
             ]);
             if view.has_repos() {
-                hints.push(("\u{21b9}", "repo"));
+                hints.push(("\u{2190}\u{2192}", "repo"));
             }
         }
     }
@@ -940,10 +950,23 @@ fn state_style(state: &str, dim: Style) -> Style {
     }
 }
 
+/// Folding from a unit leaves the cursor on the repo it folded into, which sits above every row it
+/// unfolded and so keeps its index.
+fn repo_row_of(rows: &[Row], cursor: usize) -> usize {
+    rows[..=cursor]
+        .iter()
+        .rposition(|row| row.repo && row.owner == rows[cursor].owner)
+        .unwrap_or(cursor)
+}
+
 fn cells(row: &Row, name_width: usize) -> [String; 6] {
+    let step = match row.indent {
+        true => INDENT,
+        false => "",
+    };
     [
-        row.glyph.to_string(),
-        pad(&label(row), name_width),
+        format!("{step}{}", row.glyph),
+        pad(&row.name, name_width - step.chars().count()),
         pad(row.kind, KIND_WIDTH),
         pad(&row.state, STATE_WIDTH),
         pad(&row.timing, TIMING_WIDTH),
@@ -951,8 +974,8 @@ fn cells(row: &Row, name_width: usize) -> [String; 6] {
     ]
 }
 
-/// A unit of an unfolded repo is stepped in: its state columns still line up with everything else's,
-/// because only the name moves.
+/// A unit of an unfolded repo is stepped in, glyph and all: its state columns still line up with
+/// everything else's, because its name gives up the room the step takes.
 fn label(row: &Row) -> String {
     match row.indent {
         true => format!("{INDENT}{}", row.name),
@@ -1175,10 +1198,27 @@ mod tests {
         let mut inner = row("rails", "local", "");
         inner.indent = true;
         let outer = row("rails", "local", "");
-        let [_, name, kind, ..] = cells(&inner, 8);
-        assert_eq!(name, format!("{INDENT}rails  "));
-        assert_eq!(name.chars().count(), cells(&outer, 8)[1].chars().count());
-        assert_eq!(kind, cells(&outer, 8)[2]);
+        let [glyph, name, kind, ..] = cells(&inner, 8);
+        let [outer_glyph, outer_name, outer_kind, ..] = cells(&outer, 8);
+        assert_eq!(glyph, format!("{INDENT}{outer_glyph}"));
+        assert_eq!(
+            glyph.chars().count() + name.chars().count(),
+            outer_glyph.chars().count() + outer_name.chars().count()
+        );
+        assert_eq!(kind, outer_kind);
+    }
+
+    #[test]
+    fn folding_from_a_unit_puts_the_cursor_back_on_its_repo() {
+        let mut repo = row("accounts", "", "");
+        repo.owner = crate::view::Owner::Included(0);
+        repo.repo = true;
+        let mut inner = row("rails", "local", "");
+        inner.owner = crate::view::Owner::Included(0);
+        let rows = [row("db", "docker", ""), repo, inner.clone(), inner];
+        assert_eq!(repo_row_of(&rows, 3), 1);
+        assert_eq!(repo_row_of(&rows, 1), 1);
+        assert_eq!(repo_row_of(&rows, 0), 0);
     }
 
     #[test]

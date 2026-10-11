@@ -1,5 +1,5 @@
 //! What the popup is looking at: the project the key resolved to, plus the sibling repos its manifest
-//! names — one collapsed row each, unfolded with `↹` into that repo's own units.
+//! names — one collapsed row each, unfolded with `→` into that repo's own units.
 //!
 //! An included repo is a project in its own right. Its rows come from its own manifest — its own
 //! commands, its own compose services, its own `hidden` and `one_shot` — and every verb, log and state
@@ -18,7 +18,7 @@ use crate::project::MANIFEST_NAME;
 use crate::rows::{self, COLLAPSED_GLYPH, EXPANDED_GLYPH, Row, contract_home};
 use crate::unit::Status;
 
-pub const NOT_A_REPO: &str = "↹ unfolds an included repo";
+pub const NOT_A_REPO: &str = "→ unfolds an included repo";
 
 /// Which manifest a row came from. Statuses are read per owner and only for what is on screen, so a
 /// collapsed repo costs no `compose ps` and no records of its own.
@@ -189,9 +189,9 @@ impl View {
         rows
     }
 
-    /// `↹` on the row under the cursor. `Err` is the reason nothing moved — a row that is not a repo,
+    /// `→` on the row under the cursor. `Err` is the reason nothing moved — a row that is not a repo,
     /// or a repo with no manifest to show.
-    pub fn toggle(&mut self, row: &Row) -> Result<(), String> {
+    pub fn unfold(&mut self, row: &Row) -> Result<(), String> {
         let Owner::Included(index) = row.owner else {
             return Err(NOT_A_REPO.to_string());
         };
@@ -202,12 +202,20 @@ impl View {
             None => Err(NOT_A_REPO.to_string()),
             Some(Err(why)) => Err(why.clone()),
             Some(Ok(_)) => {
-                if !self.expanded.remove(&index) {
-                    self.expanded.insert(index);
-                }
+                self.expanded.insert(index);
                 Ok(())
             }
         }
+    }
+
+    /// `←` folds the repo a row belongs to, whether that row is the repo's own or one unfolded out of
+    /// it.
+    pub fn fold(&mut self, row: &Row) -> Result<(), String> {
+        let Owner::Included(index) = row.owner else {
+            return Err(NOT_A_REPO.to_string());
+        };
+        self.expanded.remove(&index);
+        Ok(())
     }
 }
 
@@ -408,7 +416,7 @@ mod tests {
             ),
         );
         let rows = view.rows(&Statuses::new());
-        view.toggle(&rows[1]).expect("the repo unfolds");
+        view.unfold(&rows[1]).expect("the repo unfolds");
 
         let rows = view.rows(&Statuses::new());
         assert_eq!(
@@ -424,8 +432,14 @@ mod tests {
         assert_eq!(rows[0].owner, Owner::Focused);
         assert!(!rows[0].indent);
 
-        view.toggle(&rows[1]).expect("the repo folds again");
+        view.fold(&rows[1]).expect("the repo folds again");
         assert_eq!(view.rows(&Statuses::new()).len(), 2);
+
+        view.unfold(&rows[1]).expect("the repo unfolds");
+        view.fold(&rows[3])
+            .expect("a unit folds the repo it came out of");
+        assert_eq!(view.rows(&Statuses::new()).len(), 2);
+        assert_eq!(view.fold(&rows[0]).unwrap_err(), NOT_A_REPO);
     }
 
     #[test]
@@ -451,7 +465,7 @@ mod tests {
             rows[0].note,
             "1 process, from its own config; its own 1 include is not followed"
         );
-        view.toggle(&rows[0]).expect("the repo unfolds");
+        view.unfold(&rows[0]).expect("the repo unfolds");
 
         let rows = view.rows(&Statuses::new());
         assert_eq!(
@@ -473,7 +487,7 @@ mod tests {
             ),
         );
         let rows = view.rows(&Statuses::new());
-        view.toggle(&rows[1]).expect("the repo unfolds");
+        view.unfold(&rows[1]).expect("the repo unfolds");
         let rows = view.rows(&Statuses::new());
 
         assert_eq!(
@@ -504,7 +518,7 @@ mod tests {
             "a collapsed repo is not read from"
         );
         let rows = view.rows(&Statuses::new());
-        view.toggle(&rows[0]).expect("the repo unfolds");
+        view.unfold(&rows[0]).expect("the repo unfolds");
         assert_eq!(view.on_screen().len(), 2);
     }
 
@@ -520,7 +534,7 @@ mod tests {
             ),
         );
         let rows = view.rows(&Statuses::new());
-        view.toggle(&rows[1]).expect("the repo unfolds");
+        view.unfold(&rows[1]).expect("the repo unfolds");
 
         let mut statuses = Statuses::new();
         statuses.insert(
@@ -589,7 +603,7 @@ mod tests {
 
         // Not one of the six unfolds, and none of them takes the view down with it.
         for row in &rows {
-            let unfolded = view.toggle(row);
+            let unfolded = view.unfold(row);
             if row.name == "twice" {
                 assert!(unfolded.is_ok());
                 continue;
@@ -641,7 +655,7 @@ mod tests {
         assert!(folded[1].contains("[includes.nameless]"), "{folded:?}");
 
         let rows = view.rows(&Statuses::new());
-        view.toggle(&rows[1]).expect("the repo unfolds");
+        view.unfold(&rows[1]).expect("the repo unfolds");
         let unfolded = view.complaints();
         assert_eq!(unfolded.len(), 3, "{unfolded:?}");
         assert!(
@@ -651,11 +665,11 @@ mod tests {
     }
 
     #[test]
-    fn a_repo_row_is_the_only_thing_tab_moves() {
-        let repos = Repos::new("tab");
+    fn a_repo_row_is_the_only_thing_that_unfolds() {
+        let repos = Repos::new("unfold");
         let mut view = repos.view("storefront", "[local.rails]\ncmd = [\"rails\"]\n");
         let rows = view.rows(&Statuses::new());
-        assert_eq!(view.toggle(&rows[0]).unwrap_err(), NOT_A_REPO);
+        assert_eq!(view.unfold(&rows[0]).unwrap_err(), NOT_A_REPO);
     }
 
     #[test]

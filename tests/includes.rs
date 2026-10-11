@@ -1,5 +1,5 @@
 //! Included repos as a user meets them: the real binary drawn into a pty of this test's own making,
-//! `↹` typed into it, and the screen read back.
+//! `→` typed into it, and the screen read back.
 //!
 //! Every repo here is a throwaway under `/tmp` and `HOME` is one of its own, so the state root, the
 //! daemon socket and the herdr socket the popup dials all land beside them — the last answered by this
@@ -22,7 +22,7 @@ use support::{PATIENCE, Pty, STEP, answer_snapshots};
 /// Wider than a window ever makes a popup: what a narrow one does to the footer is `footer.rs`'s.
 const COLS: u16 = 180;
 
-const TAB: &str = "\t";
+const RIGHT: &str = "\u{1b}[C";
 const DOWN: &str = "j";
 const UP: &str = "k";
 const ESC: &str = "\u{1b}";
@@ -126,10 +126,18 @@ impl Drop for Stage {
     }
 }
 
-/// Whether the row `name` sits on is one of an unfolded repo's: every other row has its name one
-/// space after the glyph, and only a stepped-in one has two.
-fn stepped_in(line: &str, name: &str) -> bool {
-    line.contains(&format!("  {name}"))
+/// Whether the row `name` sits on is one of `repo`'s unfolded units: the whole row, glyph and all,
+/// starts two columns right of the repo's own, and nothing is left where the repo's glyph is.
+fn stepped_in(screen: &str, name: &str, repo: &str) -> bool {
+    let glyph_at = |line: &str, name: &str| {
+        line[..line.find(&format!(" {name}")).expect(name)]
+            .chars()
+            .count()
+            - 1
+    };
+    let line = row_of(screen, name);
+    let outer = glyph_at(&row_of(screen, repo), repo);
+    glyph_at(&line, name) == outer + 2 && line.chars().nth(outer) == Some(' ')
 }
 
 /// The row a name sits on, as it is drawn: the state columns are only readable one row at a time.
@@ -144,7 +152,7 @@ fn row_of(screen: &str, name: &str) -> String {
 /// A row is the one a name sits on only when the name is its own: accounts's `storefront` service
 /// carries `docker compose run --rm storefront rails …` in its note, which is not the `rails` row.
 fn named(line: &str, name: &str) -> bool {
-    line.split_whitespace().nth(1) == Some(name.trim())
+    line.trim_start_matches('❯').split_whitespace().nth(1) == Some(name.trim())
 }
 
 /// Waits for the row `name` sits on to carry `needle`, so one row reading `up` is never mistaken for
@@ -189,12 +197,12 @@ fn a_unit_started_from_the_including_view_is_the_same_unit_from_the_included_rep
         "the included repo unfolded uninvited:\n{folded}"
     );
 
-    // `↹` on the repo row, then the cursor onto the unit it revealed.
+    // `→` on the repo row, then the cursor onto the unit it revealed.
     stage.pty().press(DOWN);
-    stage.pty().press(TAB);
+    stage.pty().press(RIGHT);
     let unfolded = stage.pty().wait_for("ticker");
     assert!(
-        stepped_in(&row_of(&unfolded, "ticker"), "ticker"),
+        stepped_in(&unfolded, "ticker", "accounts"),
         "an unfolded row is not stepped in:\n{unfolded}"
     );
     assert!(row_of(&unfolded, "ticker").contains("local"));
@@ -315,7 +323,7 @@ fn six_included_repos_stay_six_rows_and_each_one_that_cannot_be_read_says_why() 
         row_of(&screen, "missing").contains("no repo at"),
         "{screen}"
     );
-    assert!(screen.contains("↹ repo"), "{screen}");
+    assert!(screen.contains("←→ repo"), "{screen}");
     for uninvited in ["dragonfly", "redis-sentinel-1", "sidekiq", "mongo"] {
         assert!(
             !screen.contains(uninvited),
@@ -328,12 +336,12 @@ fn six_included_repos_stay_six_rows_and_each_one_that_cannot_be_read_says_why() 
     let refused = stage.pty().wait_for("act on unit rows");
     assert!(!refused.contains("sidekiq"), "{refused}");
 
-    // Neither does `↹` on any of the four that cannot be read.
+    // Neither does `→` on any of the four that cannot be read.
     for _ in 0..2 {
         stage.pty().press(DOWN);
     }
     for _ in 0..4 {
-        stage.pty().press(TAB);
+        stage.pty().press(RIGHT);
         stage.pty().press(DOWN);
     }
     let still_folded = stage.pty().screen();
@@ -351,7 +359,7 @@ fn six_included_repos_stay_six_rows_and_each_one_that_cannot_be_read_says_why() 
     for _ in 0..6 {
         stage.pty().press(UP);
     }
-    stage.pty().press(TAB);
+    stage.pty().press(RIGHT);
     let unfolded = stage.pty().wait_for("sidekiq");
     for own in [
         "rails",
@@ -363,7 +371,7 @@ fn six_included_repos_stay_six_rows_and_each_one_that_cannot_be_read_says_why() 
         "mongo",
     ] {
         assert!(
-            stepped_in(&row_of(&unfolded, own), own),
+            stepped_in(&unfolded, own, "accounts"),
             "{own} is not stepped in:\n{unfolded}"
         );
     }
