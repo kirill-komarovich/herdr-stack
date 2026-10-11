@@ -7,8 +7,10 @@
 //!
 //! Reads and verbs go down connections of their own, because they wait on different things: a status
 //! read is a `compose ps` the popup asks for on a beat, and a verb is the user's own and must not
-//! queue behind one. Each connection is served by one thread in the order posted, so a stop pressed
-//! after a start is still performed after it. Holding a connection for the popup's whole life is also
+//! queue behind one. Each unit's verbs go down a connection of their own too, because a docker start
+//! holds `compose up --wait` on a healthcheck and a start pressed on another row meanwhile must not
+//! wait it out. Each connection is served by one thread in the order posted, so a stop pressed after
+//! a start on the same unit is still performed after it. Holding a connection for the popup's whole life is also
 //! what keeps an idle daemon from exiting underneath it.
 
 use std::collections::BTreeMap;
@@ -37,7 +39,9 @@ struct Errand {
 
 pub struct Errands {
     reads: Sender<Errand>,
-    acts: Sender<Errand>,
+    lanes: BTreeMap<String, Sender<Errand>>,
+    endpoint: Endpoint,
+    answering: Sender<Answer>,
     answers: Receiver<Answer>,
     /// Status reads posted and not yet answered. A second beat must not queue a second round behind
     /// a daemon that is still busy with the first.
@@ -57,16 +61,11 @@ impl Errands {
             },
             answering.clone(),
         );
-        let acts = serve(
-            Held {
-                endpoint,
-                link: None,
-            },
-            answering,
-        );
         Errands {
             reads,
-            acts,
+            lanes: BTreeMap::new(),
+            endpoint,
+            answering,
             answers,
             reading: 0,
         }
@@ -85,7 +84,18 @@ impl Errands {
     }
 
     pub fn verb(&mut self, method: &'static str, params: Value) {
-        let _ = self.acts.send(Errand {
+        let endpoint = &self.endpoint;
+        let answering = &self.answering;
+        let lane = self.lanes.entry(lane_of(&params)).or_insert_with(|| {
+            serve(
+                Held {
+                    endpoint: endpoint.clone(),
+                    link: None,
+                },
+                answering.clone(),
+            )
+        });
+        let _ = lane.send(Errand {
             method,
             params,
             owner: None,
@@ -126,6 +136,14 @@ impl Errands {
     }
 }
 
+fn lane_of(params: &Value) -> String {
+    let unit = &params["unit"];
+    format!(
+        "{}\0{}\0{}",
+        params["project"]["path"], unit["kind"], unit["name"]
+    )
+}
+
 /// One thread on one connection, answering everything posted to it in order.
 fn serve(mut held: Held, answering: Sender<Answer>) -> Sender<Errand> {
     let (posting, posted) = channel::<Errand>();
@@ -162,5 +180,110 @@ impl Held {
             self.link = Some(self.endpoint.open());
         }
         self.link.as_mut().expect("a link")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use serde_json::json;
+
+    use crate::{daemon, state};
+
+    const SLOW: Duration = Duration::from_millis(1500);
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("herdr-dev-errand-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        root
+    }
+
+    /// Serves every connection on a thread of its own, as the real daemon does, and takes `SLOW` over
+    /// a start of `db` the way `compose up --wait` holds one on a healthcheck. Each verb is answered
+    /// with a note naming what was done to which unit.
+    fn fake_daemon(root: &Path) {
+        let listener = UnixListener::bind(state::socket_path(root)).expect("bind");
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut writer = &stream;
+                    for line in BufReader::new(&stream).lines() {
+                        let Ok(line) = line else { break };
+                        let asked: Value = serde_json::from_str(&line).expect("json");
+                        let method = asked["method"].as_str().unwrap_or_default().to_string();
+                        let result = if method == "handshake" {
+                            json!({"version": "test", "protocol": daemon::PROTOCOL, "pid": 1})
+                        } else {
+                            let unit = asked["params"]["unit"]["name"].as_str().unwrap_or_default();
+                            if method == "start" && unit == "db" {
+                                std::thread::sleep(SLOW);
+                            }
+                            json!({"note": format!("{method} {unit}")})
+                        };
+                        let reply = json!({"id": asked["id"], "result": result});
+                        if writeln!(writer, "{reply}").is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    fn params(unit: &str) -> Value {
+        json!({"project": {"path": "/p", "name": "p"}, "unit": {"kind": "local", "name": unit}})
+    }
+
+    fn notes(errands: &mut Errands, wanted: usize) -> Vec<(String, Duration)> {
+        let posted = Instant::now();
+        let mut notes = Vec::new();
+        while notes.len() < wanted && posted.elapsed() < SLOW * 4 {
+            for answer in errands.answered() {
+                if let Answer::Note(Ok(Some(note))) = answer {
+                    notes.push((note, posted.elapsed()));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        notes
+    }
+
+    #[test]
+    fn a_verb_on_one_unit_does_not_queue_behind_a_slow_verb_on_another() {
+        let root = temp_root("lanes");
+        fake_daemon(&root);
+        let endpoint = Endpoint::at(&root);
+        let mut errands = Errands::keeping(endpoint.open(), endpoint);
+
+        errands.verb("start", params("db"));
+        errands.verb("start", params("rails"));
+
+        let notes = notes(&mut errands, 2);
+        assert_eq!(notes[0].0, "start rails", "{notes:?}");
+        assert!(notes[0].1 < SLOW, "{notes:?}");
+    }
+
+    #[test]
+    fn a_stop_pressed_after_a_start_on_the_same_unit_is_still_performed_after_it() {
+        let root = temp_root("order");
+        fake_daemon(&root);
+        let endpoint = Endpoint::at(&root);
+        let mut errands = Errands::keeping(endpoint.open(), endpoint);
+
+        errands.verb("start", params("db"));
+        errands.verb("stop", params("db"));
+
+        let said: Vec<String> = notes(&mut errands, 2)
+            .into_iter()
+            .map(|(note, _)| note)
+            .collect();
+        assert_eq!(said, ["start db", "stop db"]);
     }
 }
