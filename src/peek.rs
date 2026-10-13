@@ -221,7 +221,9 @@ struct Stream {
 
 impl Stream {
     fn of(root: &Path, service: &str) -> Result<Stream, String> {
-        let mut child = crate::docker::logs_command(root, service)
+        let mut command = crate::docker::logs_command(root, service);
+        crate::dir_env::apply(&mut command);
+        let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

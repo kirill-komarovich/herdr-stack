@@ -3,6 +3,7 @@ pub mod attach;
 pub mod cli;
 pub mod client;
 pub mod daemon;
+pub mod dir_env;
 pub mod docker;
 pub mod env;
 pub mod errand;

@@ -28,10 +28,6 @@ use crate::terminal::{self, Terminal};
 /// otherwise: this sits under its `env` rather than over it.
 const TERM: (&str, &str) = ("TERM", "xterm-256color");
 
-/// A unit on pipes has no terminal to name, but an interactive shell with no `TERM` at all complains
-/// into the log before it gets to the unit, so the shell alone is told this and drops it again.
-const QUIET_TERM: (&str, &str) = ("TERM", "dumb");
-
 /// The env here is the manifest's two layers only; the process layer under it is what `crate::env`
 /// lets through of the daemon's own, added at spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +57,7 @@ pub fn command<I>(spec: &Spec, shell: &Shell, log: &Path, base: I) -> Command
 where
     I: IntoIterator<Item = (String, String)>,
 {
-    let quiet = !spec.tty && !spec.env.contains_key(QUIET_TERM.0);
+    let quiet = !spec.tty && !spec.env.contains_key(shell::QUIET_TERM.0);
     let piped_log = (!spec.tty).then_some(log);
     let mut command = shell.command(&spec.cmd, piped_log, quiet);
     command.current_dir(&spec.cwd);
@@ -71,7 +67,7 @@ where
     if spec.tty {
         command.env(TERM.0, TERM.1);
     } else if quiet {
-        command.env(QUIET_TERM.0, QUIET_TERM.1);
+        command.env(shell::QUIET_TERM.0, shell::QUIET_TERM.1);
     }
     command.envs(&spec.env);
     command

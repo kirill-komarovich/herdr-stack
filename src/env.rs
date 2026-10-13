@@ -14,7 +14,11 @@
 //! its prompt hooks in the unit's own cwd.
 
 /// The machine and the user, never a project.
+/// The `DOCKER_*` three name which docker to talk to, the machine's rather than any one project's.
 const KEEP: &[&str] = &[
+    "DOCKER_CONFIG",
+    "DOCKER_CONTEXT",
+    "DOCKER_HOST",
     "HOME",
     "LANG",
     "LOGNAME",

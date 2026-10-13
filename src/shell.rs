@@ -12,8 +12,11 @@
 //! where it found it: a shim from that `PATH` would then shadow the toolchain this directory names.
 
 use std::ffi::OsString;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use toml_edit::DocumentMut;
 
@@ -113,6 +116,129 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// What this shell's config and prompt hooks export in `dir`, for the commands herdr-stack runs
+    /// there itself rather than as a unit — `docker compose` reads `COMPOSE_PROJECT_NAME` and the
+    /// like from it. Started the way a unit's shell is: login, interactive, on `FRESH_PATH`, over
+    /// `base`. The dump goes to a file made private first, since an env carries secrets and a shell
+    /// writes its own terminal setup to stdout.
+    pub fn env_in(
+        &self,
+        dir: &Path,
+        base: &[(String, String)],
+    ) -> std::io::Result<Vec<(String, String)>> {
+        let dump = dump_path();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&dump)?;
+        let family = self.family();
+        let mut command = Command::new(&self.program);
+        if family != Family::Other {
+            command.arg("-l").arg("-i");
+        }
+        command.arg("-c").arg(dump_script(family));
+        if family != Family::Fish {
+            command.arg(NAME);
+        }
+        command
+            .arg(&dump)
+            .current_dir(dir)
+            .env_clear()
+            .envs(base.iter().cloned())
+            .env("PATH", FRESH_PATH)
+            .env(QUIET_TERM.0, QUIET_TERM.1)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let finished = run_within(command, ENV_PATIENCE);
+        let dumped = std::fs::read(&dump);
+        let _ = std::fs::remove_file(&dump);
+        finished?;
+        Ok(parse_env(&dumped?))
+    }
+}
+
+/// A shell whose config waits on something — a passphrase, a network mount — must not hold up a
+/// status that only wanted to read compose.
+const ENV_PATIENCE: Duration = Duration::from_secs(15);
+
+/// An interactive shell with no `TERM` at all complains before it gets anywhere, so a shell started
+/// without a terminal is told this. A unit on pipes has no terminal to name and drops it again.
+pub const QUIET_TERM: (&str, &str) = ("TERM", "dumb");
+
+/// What the dumping shell set for itself rather than read from config, so none of it is the
+/// directory's.
+const SHELLS_OWN: [&str; 5] = ["PWD", "OLDPWD", "SHLVL", "_", "TERM"];
+
+fn dump_path() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "herdr-stack-env-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn run_within(mut command: Command, patience: Duration) -> std::io::Result<()> {
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + patience;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return match status.success() {
+                true => Ok(()),
+                false => Err(std::io::Error::other(format!(
+                    "the shell exited with {status}"
+                ))),
+            };
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::other(format!(
+                "the shell took longer than {}s to start",
+                patience.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn parse_env(dumped: &[u8]) -> Vec<(String, String)> {
+    String::from_utf8_lossy(dumped)
+        .split('\0')
+        .filter_map(|entry| entry.split_once('='))
+        .filter(|(key, _)| !key.is_empty() && !SHELLS_OWN.contains(key))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+fn dump_script(family: Family) -> String {
+    match family {
+        Family::Fish => format!(
+            "set -l herdr_stack_env $argv[1]; {} >/dev/null 2>&1; env -0 >$herdr_stack_env",
+            hooks(family)
+        ),
+        Family::Other => "env -0 >\"$1\"".to_string(),
+        _ => format!(
+            "herdr_stack_env=$1; {} >/dev/null 2>&1; env -0 >\"$herdr_stack_env\"",
+            hooks(family)
+        ),
+    }
+}
+
+/// Where each shell keeps what it runs before drawing a prompt.
+fn hooks(family: Family) -> &'static str {
+    match family {
+        // `fish_greeting` and the first prompt's terminal setup both hang off `fish_prompt`.
+        Family::Fish => "set -g fish_greeting; emit fish_prompt",
+        Family::Zsh => "for hook in $precmd_functions; do $hook; done",
+        Family::Bash => "for hook in \"${PROMPT_COMMAND[@]}\"; do eval \"$hook\"; done",
+        Family::Other => "",
+    }
+}
+
 fn located(program: PathBuf, path: &str) -> PathBuf {
     if program.components().count() > 1 {
         return program;
@@ -130,24 +256,9 @@ fn located(program: PathBuf, path: &str) -> PathBuf {
 /// descriptor: macOS's bash 3.2 closes every one above stderr when it starts as an interactive login
 /// shell.
 fn script(family: Family, piped: bool, unset_term: bool) -> String {
-    let (hooks, unset, exec) = match family {
-        // `fish_greeting` and the first prompt's terminal setup both hang off `fish_prompt`.
-        Family::Fish => (
-            "set -g fish_greeting; emit fish_prompt >/dev/null",
-            "set -e TERM; ",
-            "exec $argv",
-        ),
-        Family::Zsh => (
-            "for hook in $precmd_functions; do $hook; done >/dev/null",
-            "unset TERM; ",
-            "exec \"$@\"",
-        ),
-        Family::Bash => (
-            "for hook in \"${PROMPT_COMMAND[@]}\"; do eval \"$hook\"; done >/dev/null",
-            "unset TERM; ",
-            "exec \"$@\"",
-        ),
-        Family::Other => ("", "unset TERM; ", "exec \"$@\""),
+    let (unset, exec) = match family {
+        Family::Fish => ("set -e TERM; ", "exec $argv"),
+        _ => ("unset TERM; ", "exec \"$@\""),
     };
     let (take_log, hooks_err, exec_out) = match (piped, family) {
         (false, _) => ("", "", ""),
@@ -162,9 +273,9 @@ fn script(family: Family, piped: bool, unset_term: bool) -> String {
             " >>\"$herdr_stack_log\" 2>&1",
         ),
     };
-    let hooks = match hooks {
+    let hooks = match hooks(family) {
         "" => String::new(),
-        hooks => format!("{hooks}{hooks_err}; "),
+        hooks => format!("{hooks} >/dev/null{hooks_err}; "),
     };
     let unset = if unset_term { unset } else { "" };
     format!("{take_log}{hooks}{unset}{exec}{exec_out}")
@@ -173,6 +284,7 @@ fn script(family: Family, piped: bool, unset_term: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn argv_of(command: &Command) -> Vec<String> {
         std::iter::once(command.get_program())
@@ -257,6 +369,40 @@ mod tests {
         let bash = argv_of(&Shell::new("/bin/bash").command(&unit(), None, false));
         assert!(bash[4].contains("PROMPT_COMMAND"), "{}", bash[4]);
         assert_eq!(&bash[5..], [NAME, "bin/vite", "dev"]);
+    }
+
+    #[test]
+    fn the_env_a_directory_gets_is_what_the_shells_prompt_hooks_export_there() {
+        let home = home_with("env-in", None);
+        let dir = home.join("proj");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(home.join(".bash_profile"), ". ~/.bashrc\n").expect(".bash_profile");
+        std::fs::write(
+            home.join(".bashrc"),
+            "PROMPT_COMMAND='[ -f .hook-env ] && . ./.hook-env'\n",
+        )
+        .expect(".bashrc");
+        std::fs::write(dir.join(".hook-env"), "export HD_FROM_HOOK='two\nlines'\n").expect("hook");
+        let base = vec![
+            ("HOME".to_string(), home.to_string_lossy().into_owned()),
+            ("HD_FROM_BASE".to_string(), "kept".to_string()),
+        ];
+
+        let env: BTreeMap<String, String> = Shell::new("/bin/bash")
+            .env_in(&dir, &base)
+            .expect("the shell runs")
+            .into_iter()
+            .collect();
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(
+            env.get("HD_FROM_HOOK").map(String::as_str),
+            Some("two\nlines")
+        );
+        assert_eq!(env.get("HD_FROM_BASE").map(String::as_str), Some("kept"));
+        assert!(
+            !env.contains_key("PWD"),
+            "the shell's own bookkeeping is not the directory's"
+        );
     }
 
     #[test]

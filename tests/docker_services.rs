@@ -46,6 +46,20 @@ impl Scratch {
         self.root.join("state")
     }
 
+    /// Compose runs in the user's shell, config and all, so the daemon gets a `HOME` with none, and
+    /// only Docker Desktop's cli-plugins borrowed from the real one so `compose` is still a subcommand.
+    fn home(&self) -> PathBuf {
+        let home = self.root.join("home");
+        std::fs::create_dir_all(home.join(".config/herdr")).expect("home");
+        let plugins =
+            PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".docker/cli-plugins");
+        if plugins.is_dir() && !home.join(".docker/cli-plugins").exists() {
+            std::fs::create_dir_all(home.join(".docker")).expect("a docker dir");
+            std::os::unix::fs::symlink(plugins, home.join(".docker/cli-plugins")).expect("plugins");
+        }
+        home
+    }
+
     /// The directory basename is what compose would take its project name from, and compose addresses
     /// a project by *name* rather than by path: a directory called `storefront` here would let `down`
     /// reach the real storefront. So the basename is made unmistakably this process's.
@@ -91,8 +105,9 @@ struct Daemon {
 
 impl Daemon {
     /// `docker_host` is what the daemon will see; `None` leaves the real one alone.
-    fn serving(root: &Path, docker_host: Option<&str>) -> Daemon {
+    fn serving(root: &Path, home: &Path, docker_host: Option<&str>) -> Daemon {
         let mut command = Endpoint::at(root).command(exe());
+        command.env("HOME", home).env("SHELL", "/bin/sh");
         if let Some(host) = docker_host {
             command.env("DOCKER_HOST", host);
         }
@@ -203,7 +218,7 @@ fn a_docker_row_the_daemon_cannot_read_is_unknown_rather_than_guessed_at() {
     let mut scratch = Scratch::new("unreachable");
     let project = scratch.project(MANIFEST);
     scratch.compose(&project, SERVICES);
-    let daemon = Daemon::serving(&scratch.state(), Some(&nowhere()));
+    let daemon = Daemon::serving(&scratch.state(), &scratch.home(), Some(&nowhere()));
     let mut link = daemon.link();
 
     let units = link.status(&project).expect("status");
@@ -241,7 +256,7 @@ fn a_row_from_the_cache_is_marked_stale_and_never_pretended_live() {
     )
     .expect("a cached reading");
 
-    let daemon = Daemon::serving(&state, Some(&nowhere()));
+    let daemon = Daemon::serving(&state, &scratch.home(), Some(&nowhere()));
     let mut link = daemon.link();
     let status = status_of(&mut link, &project, "plain");
 
@@ -260,7 +275,7 @@ fn a_verb_on_a_docker_row_is_answered_by_the_daemon_rather_than_refused() {
     let mut scratch = Scratch::new("verb");
     let project = scratch.project(MANIFEST);
     scratch.compose(&project, SERVICES);
-    let daemon = Daemon::serving(&scratch.state(), Some(&nowhere()));
+    let daemon = Daemon::serving(&scratch.state(), &scratch.home(), Some(&nowhere()));
     let mut link = daemon.link();
 
     // Docker is not there, so each verb comes back as a note about the connection — an answer, which
@@ -273,6 +288,53 @@ fn a_verb_on_a_docker_row_is_answered_by_the_daemon_rather_than_refused() {
         };
         let note = asked.expect("an answer").expect("a note");
         assert!(note.contains("connect"), "{verb}: {note}");
+    }
+}
+
+/// A compose file that takes its project name from the env, as a repo whose mise or direnv config
+/// computes it does: the name comes from a prompt hook of the user's shell, and compose is only asked
+/// anything once it has one.
+#[test]
+fn compose_reads_what_the_users_shell_exports_in_the_project() {
+    let scratch = Scratch::new("hooked");
+    let project = scratch.project(MANIFEST);
+    std::fs::write(
+        project.root.join("docker-compose.yml"),
+        format!("name: ${{HD_COMPOSE_NAME:?the hook never ran}}\n{SERVICES}"),
+    )
+    .expect("compose file");
+    std::fs::write(
+        project.root.join(".hook-env"),
+        format!("export HD_COMPOSE_NAME={}\n", project.name),
+    )
+    .expect(".hook-env");
+    let home = scratch.home();
+    std::fs::write(
+        home.join(".config/herdr/config.toml"),
+        "[terminal]\ndefault_shell = \"/bin/bash\"\n",
+    )
+    .expect("herdr config");
+    std::fs::write(home.join(".bash_profile"), ". ~/.bashrc\n").expect(".bash_profile");
+    std::fs::write(
+        home.join(".bashrc"),
+        "PROMPT_COMMAND='[ -f .hook-env ] && . ./.hook-env'\n",
+    )
+    .expect(".bashrc");
+    let daemon = Daemon::serving(&scratch.state(), &home, Some(&nowhere()));
+    let mut link = daemon.link();
+
+    let units = link.status(&project).expect("status");
+    for service in &project.docker {
+        let note = units[&unit::key(unit::DOCKER, &service.name)]
+            .note
+            .clone()
+            .unwrap_or_default();
+        assert!(!note.contains("hook never ran"), "{}: {note}", service.name);
+        assert!(
+            note.to_lowercase().contains("docker"),
+            "{}: {note}",
+            service.name
+        );
     }
 }
 
@@ -289,7 +351,7 @@ fn every_row_of_the_state_mapping_reads_the_way_docker_actually_reports_it() {
             .is_ok_and(|output| output.status.success()),
         "alpine:latest must already be in the local image store; nothing here pulls"
     );
-    let daemon = Daemon::serving(&scratch.state(), None);
+    let daemon = Daemon::serving(&scratch.state(), &scratch.home(), None);
     let mut link = daemon.link();
 
     for name in ["plain", "checked", "sick", "boom", "oneshot"] {

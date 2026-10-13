@@ -363,7 +363,9 @@ fn cached(container: Option<Container>, uptime: Option<Duration>) -> Cache {
 /// `Err` is "docker could not tell us": an unreachable daemon, or a project root compose knows
 /// nothing about. Both are `unknown` rather than a state invented from an absence.
 pub fn ps(root: &Path) -> Result<Vec<Container>, String> {
-    let output = ps_command(root)
+    let mut command = ps_command(root);
+    crate::dir_env::apply(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("{}: {error}", path().display()))?;
     if !output.status.success() {
@@ -430,6 +432,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 fn run(mut command: Command, service: &str) -> Result<Verdict, String> {
+    crate::dir_env::apply(&mut command);
     let output = command
         .output()
         .map_err(|error| format!("{}: {error}", path().display()))?;
