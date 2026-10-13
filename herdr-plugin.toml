@@ -1,6 +1,6 @@
 id = "herdr-stack"
 name = "Dev stack"
-version = "0.0.3"
+version = "0.0.4"
 min_herdr_version = "0.8.0"
 platforms = ["linux", "macos"]
 
