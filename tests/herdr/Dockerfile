@@ -3,7 +3,7 @@ FROM rust:1-slim-bookworm
 ARG HERDR_VERSION=0.9.3
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl lsof procps python3 \
+ && apt-get install -y --no-install-recommends ca-certificates curl lsof procps \
  && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL -o /usr/local/bin/herdr \

@@ -1,8 +1,8 @@
 //! The agent-facing CLI as an agent meets it: the binary, argv, and one JSON document on stdout.
 //!
-//! The unit under test is a python listener of this file's own making, on a port the kernel just
-//! handed out, in a throwaway project under a state root of its own — never the spelled-out one,
-//! whose daemon is the user's own stack.
+//! The unit under test is this test binary re-run as a listener, on a port the kernel just handed
+//! out, in a throwaway project under a state root of its own — never the spelled-out one, whose
+//! daemon is the user's own stack.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -36,14 +36,25 @@ fn free_port() -> u16 {
         .port()
 }
 
+const LISTEN_ON: &str = "HERDR_STACK_TEST_LISTEN_ON";
+
+/// Not a test of its own: the unit under test runs this binary filtered down to this function, so the
+/// listener needs nothing installed beyond what built the tests. Run any other way, it returns at once.
+#[test]
+fn listen_when_run_as_a_unit() {
+    let Ok(port) = std::env::var(LISTEN_ON) else {
+        return;
+    };
+    let port: u16 = port.parse().expect("a port");
+    let _held = TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    std::thread::sleep(Duration::from_secs(600));
+}
+
 fn listener(port: u16) -> String {
+    let exe = std::env::current_exe().expect("this test binary");
     format!(
-        "import socket, time\n\
-         s = socket.socket()\n\
-         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
-         s.bind(('127.0.0.1', {port}))\n\
-         s.listen()\n\
-         time.sleep(600)\n"
+        "[local.web]\ncmd = {}\nenv = {{ {LISTEN_ON} = \"{port}\" }}\n",
+        serde_json::json!([exe, "listen_when_run_as_a_unit", "--exact"])
     )
 }
 
@@ -181,13 +192,7 @@ fn a_status_read_lists_every_declared_unit_without_starting_a_daemon() {
 #[test]
 fn a_unit_started_through_the_cli_reports_its_pid_and_the_port_it_is_listening_on() {
     let port = free_port();
-    let scratch = Scratch::new(
-        "ports",
-        &format!(
-            "[local.web]\ncmd = [\"python3\", \"-c\", {}]\n",
-            serde_json::to_string(&listener(port)).expect("a quoted script")
-        ),
-    );
+    let scratch = Scratch::new("ports", &listener(port));
     let _daemon = Daemon::serving(&scratch.state());
 
     let started = run(&scratch, "start", &["web"]);
