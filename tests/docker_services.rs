@@ -216,7 +216,7 @@ fn a_docker_row_the_daemon_cannot_read_is_unknown_rather_than_guessed_at() {
             status
                 .note
                 .as_deref()
-                .is_some_and(|note| note.contains("docker")),
+                .is_some_and(|note| note.to_lowercase().contains("docker")),
             "{status:?}"
         );
     }

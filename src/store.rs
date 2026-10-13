@@ -598,7 +598,8 @@ mod tests {
     /// A record written before any of this existed still reads, and asks for nothing.
     #[test]
     fn a_record_from_an_older_build_reads_without_a_terminal_or_a_restore_mark() {
-        let older = "state = \"up\"\npid = 4242\ncmd = [\"bin/vite\"]\ncwd = \"/repos/storefront\"\n";
+        let older =
+            "state = \"up\"\npid = 4242\ncmd = [\"bin/vite\"]\ncwd = \"/repos/storefront\"\n";
         let read = Record::read(older).expect("an older record reads");
         assert_eq!(read.state, State::Up);
         assert!(read.env.is_empty());

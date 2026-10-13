@@ -323,7 +323,10 @@ mod tests {
             argv[3]
         );
         assert_eq!(&argv[5..], ["bin/vite", "dev"]);
-        assert_eq!(command.get_current_dir(), Some(Path::new("/repos/storefront")));
+        assert_eq!(
+            command.get_current_dir(),
+            Some(Path::new("/repos/storefront"))
+        );
     }
 
     #[test]

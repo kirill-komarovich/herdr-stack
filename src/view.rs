@@ -455,10 +455,7 @@ mod tests {
         );
         let mut view = repos.view(
             "storefront",
-            &format!(
-                "[includes.accounts]\npath = \"{}\"\n",
-                middle.display()
-            ),
+            &format!("[includes.accounts]\npath = \"{}\"\n", middle.display()),
         );
         let rows = view.rows(&Statuses::new());
         assert_eq!(
@@ -507,10 +504,7 @@ mod tests {
         let included = repos.repo("accounts", "[docker]\nnames = [\"db\"]\n");
         let mut view = repos.view(
             "storefront",
-            &format!(
-                "[includes.accounts]\npath = \"{}\"\n",
-                included.display()
-            ),
+            &format!("[includes.accounts]\npath = \"{}\"\n", included.display()),
         );
         assert_eq!(
             view.on_screen().len(),
@@ -678,10 +672,7 @@ mod tests {
         let included = repos.repo("accounts", "[env]\n");
         let view = repos.view(
             "storefront",
-            &format!(
-                "[includes.accounts]\npath = \"{}\"\n",
-                included.display()
-            ),
+            &format!("[includes.accounts]\npath = \"{}\"\n", included.display()),
         );
         assert_eq!(
             view.rows(&Statuses::new())[0].note,

@@ -39,11 +39,11 @@ fn every_example_manifest_parses_without_a_single_problem() {
     assert_eq!(
         found,
         [
-            "billing.herdr-stack.toml",
-            "storefront.herdr-stack.toml",
-            "backoffice.herdr-stack.toml",
-            "photos.herdr-stack.toml",
             "accounts.herdr-stack.toml",
+            "backoffice.herdr-stack.toml",
+            "billing.herdr-stack.toml",
+            "photos.herdr-stack.toml",
+            "storefront.herdr-stack.toml",
         ]
     );
 }

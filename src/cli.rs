@@ -509,16 +509,11 @@ mod tests {
 
         assert_eq!(pick(&listed, "db").expect("db").kind, unit::DOCKER);
         assert_eq!(
-            pick(&listed, "accounts:rails")
-                .expect("rails")
-                .project
-                .root,
+            pick(&listed, "accounts:rails").expect("rails").project.root,
             PathBuf::from("/repos/accounts")
         );
         assert_eq!(
-            pick(&listed, "accounts:local-rails")
-                .expect("rails")
-                .name,
+            pick(&listed, "accounts:local-rails").expect("rails").name,
             "rails"
         );
     }
@@ -540,10 +535,7 @@ mod tests {
             );
         }
         assert_eq!(
-            pick(&listed, "accounts:rails")
-                .expect("rails")
-                .project
-                .root,
+            pick(&listed, "accounts:rails").expect("rails").project.root,
             PathBuf::from("/repos/accounts")
         );
     }
