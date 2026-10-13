@@ -23,7 +23,10 @@ pub const ROWS: u16 = 24;
 pub const COLUMNS: u16 = 80;
 
 /// `_IOW('t', 103, struct winsize)`, which `libc` spells out for every BSD except apple.
+#[cfg(target_os = "macos")]
 const TIOCSWINSZ: libc::c_ulong = 0x8008_7467;
+#[cfg(not(target_os = "macos"))]
+const TIOCSWINSZ: libc::Ioctl = libc::TIOCSWINSZ;
 
 const CHUNK: usize = 8192;
 

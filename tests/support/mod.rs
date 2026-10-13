@@ -17,7 +17,10 @@ pub const STEP: Duration = Duration::from_millis(50);
 pub const ROWS: u16 = 24;
 
 /// `_IOW('t', 103, struct winsize)`, which `libc` spells out for every BSD except apple.
+#[cfg(target_os = "macos")]
 const TIOCSWINSZ: libc::c_ulong = 0x8008_7467;
+#[cfg(not(target_os = "macos"))]
+const TIOCSWINSZ: libc::Ioctl = libc::TIOCSWINSZ;
 
 pub fn exe() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
