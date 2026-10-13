@@ -46,14 +46,16 @@ impl Scratch {
         self.root.join("state")
     }
 
-    /// The shell Herdr's panes would run, and that shell's rc hooking in both tools.
-    fn shell(&self, program: &str, rc: &str, hooks: &str) {
+    /// The shell Herdr's panes would run and how, and the rc files that hook in both tools.
+    fn shell(&self, program: &str, mode: &str, files: &[(&str, &str)]) {
         std::fs::write(
             self.home().join(".config/herdr/config.toml"),
-            format!("[terminal]\ndefault_shell = \"{program}\"\nshell_mode = \"non_login\"\n"),
+            format!("[terminal]\ndefault_shell = \"{program}\"\nshell_mode = \"{mode}\"\n"),
         )
         .expect("herdr config");
-        std::fs::write(self.home().join(rc), hooks).expect("rc");
+        for (rc, text) in files {
+            std::fs::write(self.home().join(rc), text).expect("rc");
+        }
     }
 
     fn project(&self, manifest: &str) -> Project {
@@ -131,10 +133,19 @@ fn unit_of<'a>(project: &'a Project, name: &str) -> Target<'a> {
     Target::of(project, unit::LOCAL, name).expect("the manifest declares the unit")
 }
 
+const FISH_HOOKS: &str = "mise activate fish | source\ndirenv hook fish | source\n";
+const ZSH_HOOKS: &str = "eval \"$(mise activate zsh)\"\neval \"$(direnv hook zsh)\"\n";
+const BASH_HOOKS: &str = "eval \"$(mise activate bash)\"\neval \"$(direnv hook bash)\"\n";
+
 /// A unit on pipes and one on a terminal, both started in `program` with both tools hooked in.
-fn both_tools_reach_units_started_in(program: &str, rc: &str, hooks: &str) {
-    let mut scratch = Scratch::new(Path::new(program).file_name().unwrap().to_str().unwrap());
-    scratch.shell(program, rc, hooks);
+fn both_tools_reach_units_started_in(
+    name: &str,
+    program: &str,
+    mode: &str,
+    files: &[(&str, &str)],
+) {
+    let mut scratch = Scratch::new(name);
+    scratch.shell(program, mode, files);
     let project = scratch.project(&format!(
         "[local.piped]\ncmd = [\"sh\", \"-c\", \"{PROBE}\"]\n\
          \n[local.terminal]\ncmd = [\"sh\", \"-c\", \"{PROBE}\"]\ntty = true\n"
@@ -158,27 +169,31 @@ fn both_tools_reach_units_started_in(program: &str, rc: &str, hooks: &str) {
 
 #[test]
 fn fish_runs_its_prompt_hooks_before_becoming_the_unit() {
-    both_tools_reach_units_started_in(
-        "/usr/bin/fish",
-        ".config/fish/config.fish",
-        "mise activate fish | source\ndirenv hook fish | source\n",
-    );
+    let config = [(".config/fish/config.fish", FISH_HOOKS)];
+    both_tools_reach_units_started_in("fish", "/usr/bin/fish", "non_login", &config);
+    both_tools_reach_units_started_in("fish-login", "/usr/bin/fish", "login", &config);
 }
 
+/// A login zsh, as Herdr starts one on macOS, still reads `.zshrc` because it is interactive too.
 #[test]
 fn zsh_runs_its_prompt_hooks_before_becoming_the_unit() {
-    both_tools_reach_units_started_in(
-        "/usr/bin/zsh",
-        ".zshrc",
-        "eval \"$(mise activate zsh)\"\neval \"$(direnv hook zsh)\"\n",
-    );
+    let config = [(".zshrc", ZSH_HOOKS)];
+    both_tools_reach_units_started_in("zsh", "/usr/bin/zsh", "non_login", &config);
+    both_tools_reach_units_started_in("zsh-login", "/usr/bin/zsh", "login", &config);
 }
 
+/// A login bash, as Herdr starts one on macOS, reads `.bash_profile` and not `.bashrc`, so it gets the
+/// hooks the usual way: a `.bash_profile` that sources `.bashrc`.
 #[test]
 fn bash_runs_its_prompt_hooks_before_becoming_the_unit() {
+    both_tools_reach_units_started_in("bash", "/bin/bash", "non_login", &[(".bashrc", BASH_HOOKS)]);
     both_tools_reach_units_started_in(
+        "bash-login",
         "/bin/bash",
-        ".bashrc",
-        "eval \"$(mise activate bash)\"\neval \"$(direnv hook bash)\"\n",
+        "login",
+        &[
+            (".bashrc", BASH_HOOKS),
+            (".bash_profile", "[ -f ~/.bashrc ] && . ~/.bashrc\n"),
+        ],
     );
 }
