@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use herdr_stack::client::{Endpoint, Link, Target};
 use herdr_stack::local;
 use herdr_stack::manifest::Project;
+use herdr_stack::shell::Shell;
 use herdr_stack::store::{Identity, LOG_LINK, Record, Store};
 use herdr_stack::unit::{self, Exit, State, Status};
 
@@ -692,7 +693,9 @@ fn a_daemon_stays_for_as_long_as_it_owns_a_unit_and_the_last_stop_is_its_shutdow
     let idle = Duration::from_millis(150);
     let serving = {
         let state = state.clone();
-        std::thread::spawn(move || herdr_stack::daemon::serve_with_idle(&state, idle))
+        std::thread::spawn(move || {
+            herdr_stack::daemon::serve_with_idle(&state, idle, Shell::plain("/bin/sh"))
+        })
     };
 
     let mut link = Endpoint::at(&state)

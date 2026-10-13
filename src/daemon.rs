@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::local::Spec;
+use crate::shell::Shell;
 use crate::store::Identity;
 use crate::supervisor::{GRACE, Supervisor};
 use crate::terminal::Terminal;
@@ -74,10 +75,16 @@ fn catch_signals() {
 }
 
 pub fn serve(root: &Path) -> std::io::Result<Outcome> {
-    serve_with_idle(root, IDLE_WINDOW)
+    serve_as(root, IDLE_WINDOW, None)
 }
 
-pub fn serve_with_idle(root: &Path, idle: Duration) -> std::io::Result<Outcome> {
+/// Served from inside a test: an idle window short enough to watch, and units started in `shell`
+/// rather than in the shell of whoever runs the tests, config and all.
+pub fn serve_with_idle(root: &Path, idle: Duration, shell: Shell) -> std::io::Result<Outcome> {
+    serve_as(root, idle, Some(shell))
+}
+
+fn serve_as(root: &Path, idle: Duration, shell: Option<Shell>) -> std::io::Result<Outcome> {
     std::fs::create_dir_all(root)?;
     let Some(_lock) = claim(&state::lock_path(root))? else {
         return Ok(Outcome::Redundant);
@@ -86,7 +93,10 @@ pub fn serve_with_idle(root: &Path, idle: Duration) -> std::io::Result<Outcome> 
 
     // Before anything else: whatever the predecessor left running dies, and the projects that have
     // since been deleted go with it. Only then is what it was running started again, as ours.
-    let supervisor = Supervisor::new(root, GRACE);
+    let supervisor = match shell {
+        Some(shell) => Supervisor::with_shell(root, GRACE, shell),
+        None => Supervisor::new(root, GRACE),
+    };
     supervisor.kill_leftovers();
     supervisor.store().drop_vanished();
     supervisor.restore();

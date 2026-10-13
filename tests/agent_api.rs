@@ -129,6 +129,9 @@ fn run(scratch: &Scratch, mode: &str, units: &[&str]) -> Said {
         .arg("--state-root")
         .arg(scratch.state())
         .args(units)
+        // A verb with no daemon to talk to starts one, which would take this env to its units' shell.
+        .env("HOME", scratch.state())
+        .env("SHELL", "/bin/sh")
         .output()
         .expect("herdr-stack runs");
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use herdr_stack::client::Endpoint;
+use herdr_stack::shell::Shell;
 use herdr_stack::{daemon, state};
 
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -135,13 +136,21 @@ fn a_second_daemon_fails_the_lock_and_exits_silently_without_disturbing_the_firs
     assert!(link.request("handshake", json!({})).is_ok());
 }
 
+/// When the file came to be, from its inode change time, which is set at creation.
+fn created(path: &Path) -> (i64, i64) {
+    let metadata = path.metadata().expect("socket");
+    (metadata.ctime(), metadata.ctime_nsec())
+}
+
 #[test]
 fn a_stale_socket_file_is_unlinked_and_replaced_without_a_word() {
     let root = scratch("stale");
     let socket = state::socket_path(&root);
     drop(UnixListener::bind(&socket).expect("stale listener"));
     assert!(socket.exists());
-    let stale = socket.metadata().expect("stale socket").ino();
+    let stale = created(&socket);
+    // Apart by more than any filesystem's timestamp granularity, so a fresh file cannot tie.
+    std::thread::sleep(Duration::from_millis(20));
     assert!(
         Endpoint::at(&root).connect_within(Duration::ZERO).is_err(),
         "a stale socket must fail to connect"
@@ -159,11 +168,8 @@ fn a_stale_socket_file_is_unlinked_and_replaced_without_a_word() {
         .connect_within(PATIENCE)
         .expect("handshake over the replacement socket");
     assert_eq!(link.peer().pid, started.pid());
-    assert_ne!(
-        socket.metadata().expect("fresh socket").ino(),
-        stale,
-        "the stale socket file was reused"
-    );
+    // Not the inode: ext4 hands a just-freed inode number straight to the next file.
+    assert!(created(&socket) > stale, "the stale socket file was reused");
     assert!(started.alive());
 }
 
@@ -172,7 +178,9 @@ fn a_client_holding_the_link_keeps_the_daemon_past_its_idle_window() {
     let root = scratch("idle");
     let serving = {
         let root = root.clone();
-        std::thread::spawn(move || daemon::serve_with_idle(&root, Duration::from_millis(200)))
+        std::thread::spawn(move || {
+            daemon::serve_with_idle(&root, Duration::from_millis(200), Shell::plain("/bin/sh"))
+        })
     };
 
     let link = Endpoint::at(&root)
@@ -207,7 +215,8 @@ fn a_daemon_that_cannot_take_the_lock_reports_itself_redundant() {
         .expect("handshake");
 
     assert_eq!(
-        daemon::serve_with_idle(&root, Duration::from_millis(50)).expect("serve returns"),
+        daemon::serve_with_idle(&root, Duration::from_millis(50), Shell::plain("/bin/sh"))
+            .expect("serve returns"),
         daemon::Outcome::Redundant
     );
     assert!(
