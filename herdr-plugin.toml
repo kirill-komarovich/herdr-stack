@@ -1,7 +1,13 @@
 id = "herdr-stack"
 name = "Dev stack"
-version = "0.1.0"
+version = "0.0.1"
 min_herdr_version = "0.8.0"
+platforms = ["linux", "macos"]
+
+# Lands the binary where the panes below run it from, so an installed checkout and a linked working
+# tree look the same to them.
+[[build]]
+command = ["sh", "scripts/fetch-binary.sh"]
 
 # A plugin pane's cwd is the plugin root, so the argv is relative and needs no PATH. The log to follow
 # arrives as HERDR_STACK_LOG at open time: one entrypoint serves every unit.

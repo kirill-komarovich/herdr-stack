@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # scripts/fetch-binary.sh downloads the release named after the manifest's version, so a tag that
+      # disagrees with it would publish binaries no install ever finds.
+      - run: |
+          tag=${GITHUB_REF_NAME#v}
+          for file in herdr-plugin.toml Cargo.toml; do
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$file" | head -n 1)
+            if [ "$version" != "$tag" ]; then
+              echo "::error file=$file::version $version does not match tag $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: |
+          asset=herdr-stack-${{ matrix.target }}.tar.gz
+          tar -czf "$asset" -C target/${{ matrix.target }}/release herdr-stack
+          shasum -a 256 "$asset" > "$asset.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: herdr-stack-${{ matrix.target }}
+          path: herdr-stack-${{ matrix.target }}.tar.gz*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

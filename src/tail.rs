@@ -266,14 +266,27 @@ mod tests {
     /// The manifest is the contract these constants stand for. Two panes, because following a log and
     /// typing at a unit are two different things to be looking at.
     #[test]
-    fn the_plugin_manifest_declares_the_two_relative_panes_and_nothing_else() {
+    fn the_plugin_manifest_fetches_the_binary_and_declares_the_two_relative_panes() {
         let doc = include_str!("../herdr-plugin.toml")
             .parse::<DocumentMut>()
             .expect("manifest parses");
         assert_eq!(doc["id"].as_str(), Some(PLUGIN_ID));
-        for absent in ["actions", "startup", "events", "build"] {
+        for absent in ["actions", "startup", "events"] {
             assert!(doc.get(absent).is_none(), "manifest declares {absent}");
         }
+        let builds = doc["build"].as_array_of_tables().expect("build");
+        let build: Vec<Vec<&str>> = builds
+            .iter()
+            .map(|step| {
+                step["command"]
+                    .as_array()
+                    .expect("command")
+                    .iter()
+                    .map(|word| word.as_str().expect("word"))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(build, [["sh", "scripts/fetch-binary.sh"]]);
         let panes = doc["panes"].as_array_of_tables().expect("panes");
         let declared: Vec<&str> = panes
             .iter()
