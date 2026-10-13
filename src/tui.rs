@@ -1012,7 +1012,7 @@ mod tests {
         View::of(
             crate::manifest::Project::parse(
                 text,
-                std::path::Path::new("/repos/storefront/.herdr-dev.toml"),
+                std::path::Path::new("/repos/storefront/.herdr-stack.toml"),
             )
             .expect("manifest"),
         )
@@ -1058,7 +1058,7 @@ mod tests {
              [includes.accounts]\npath = \"/repos/accounts\"\n",
         );
         let rows = shown(&view);
-        let store = Store::at("/state/herdr-dev");
+        let store = Store::at("/state/herdr-stack");
         assert_eq!(
             log_path(&store, &view, &rows, 0).unwrap_err(),
             NO_DOCKER_LOG
@@ -1076,7 +1076,7 @@ mod tests {
     fn a_local_row_overlays_the_log_the_store_keeps_for_it() {
         let view = view("[local.vite]\ncmd = [\"bin/vite\"]\n");
         let rows = shown(&view);
-        let root = std::env::temp_dir().join("herdr-dev-tui-overlay");
+        let root = std::env::temp_dir().join("herdr-stack-tui-overlay");
         let _ = std::fs::remove_dir_all(&root);
         let store = Store::at(&root);
         let slot = store

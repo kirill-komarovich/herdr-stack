@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use herdr_dev::manifest::{LoadError, Project};
+use herdr_stack::manifest::{LoadError, Project};
 
-const MANIFEST: &str = "/tmp/herdr-dev-tests/project/.herdr-dev.toml";
+const MANIFEST: &str = "/tmp/herdr-stack-tests/project/.herdr-stack.toml";
 
 fn parse(text: &str) -> Result<Project, LoadError> {
     Project::parse(text, Path::new(MANIFEST))
@@ -415,7 +415,7 @@ fn a_relative_cwd_hangs_off_the_manifests_directory_and_tilde_off_home() {
     );
     assert_eq!(
         project.local[0].cwd,
-        Path::new("/tmp/herdr-dev-tests/project/backend")
+        Path::new("/tmp/herdr-stack-tests/project/backend")
     );
     let home = std::env::var("HOME").unwrap();
     assert_eq!(
@@ -479,13 +479,13 @@ fn an_empty_manifest_is_legal_and_empty() {
     let project = accepted("");
     assert!(project.is_empty());
     assert!(project.problems.is_empty());
-    assert_eq!(project.root, Path::new("/tmp/herdr-dev-tests/project"));
+    assert_eq!(project.root, Path::new("/tmp/herdr-stack-tests/project"));
     assert_eq!(project.name, "project");
 }
 
 #[test]
 fn a_missing_manifest_names_the_path() {
-    let error = Project::load("/tmp/herdr-dev-tests/nowhere/.herdr-dev.toml").unwrap_err();
+    let error = Project::load("/tmp/herdr-stack-tests/nowhere/.herdr-stack.toml").unwrap_err();
     assert!(matches!(error, LoadError::Read { .. }));
-    assert!(error.to_string().contains("/tmp/herdr-dev-tests/nowhere"));
+    assert!(error.to_string().contains("/tmp/herdr-stack-tests/nowhere"));
 }

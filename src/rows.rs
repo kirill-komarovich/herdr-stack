@@ -16,7 +16,7 @@ pub const COLLAPSED_GLYPH: &str = "▸";
 pub const EXPANDED_GLYPH: &str = "▾";
 
 pub const EMPTY_HEADLINE: &str = "No manifest here";
-pub const EMPTY_BODY: &str = "Nothing above the focused pane holds a .herdr-dev.toml.";
+pub const EMPTY_BODY: &str = "Nothing above the focused pane holds a .herdr-stack.toml.";
 pub const EMPTY_HINT: &str = "Press g to split a pane, start an agent and have it write one.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +116,7 @@ mod tests {
     use crate::unit::Exit;
 
     fn project(text: &str) -> Project {
-        Project::parse(text, Path::new("/repos/storefront/.herdr-dev.toml")).expect("manifest")
+        Project::parse(text, Path::new("/repos/storefront/.herdr-stack.toml")).expect("manifest")
     }
 
     fn nothing() -> BTreeMap<String, Status> {
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn the_title_is_the_project_root_with_home_contracted() {
         let home = std::env::var("HOME").expect("HOME");
-        let manifest = format!("{home}/projects/acme/storefront/.herdr-dev.toml");
+        let manifest = format!("{home}/projects/acme/storefront/.herdr-stack.toml");
         let project = Project::parse("", Path::new(&manifest)).expect("manifest");
         assert_eq!(title(&project), "~/projects/acme/storefront");
     }

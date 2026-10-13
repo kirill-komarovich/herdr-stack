@@ -24,9 +24,9 @@ const UNITS: &str = "units";
 const LOGS: &str = "logs";
 const PROJECT_FILE: &str = "project.toml";
 
-/// The symlink dropped in the project root so `tail -f .herdr-dev-logs/local-vite.log` works from
+/// The symlink dropped in the project root so `tail -f .herdr-stack-logs/local-vite.log` works from
 /// where you already are. The trailing `*` in `~/.gitignore_global` is what keeps it untracked.
-pub const LOG_LINK: &str = ".herdr-dev-logs";
+pub const LOG_LINK: &str = ".herdr-stack-logs";
 
 /// `<basename>-<first 8 hex of sha256(absolute path)>`: readable, and two checkouts of one repo never
 /// collide.
@@ -476,7 +476,7 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let root = std::env::temp_dir().join(format!("herdr-dev-store-{name}"));
+            let root = std::env::temp_dir().join(format!("herdr-stack-store-{name}"));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("scratch");
             Scratch(root)

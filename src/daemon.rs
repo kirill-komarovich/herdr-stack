@@ -467,7 +467,7 @@ mod tests {
     /// Every request in this module is answered without a project, so no unit is ever spawned.
     fn supervisor() -> Arc<Supervisor> {
         Supervisor::new(
-            &std::env::temp_dir().join(format!("herdr-dev-answer-{}", std::process::id())),
+            &std::env::temp_dir().join(format!("herdr-stack-answer-{}", std::process::id())),
             GRACE,
         )
     }
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn the_second_claim_on_a_lockfile_fails_while_the_first_is_held() {
-        let dir = std::env::temp_dir().join(format!("herdr-dev-lock-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("herdr-stack-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("daemon.lock");
 

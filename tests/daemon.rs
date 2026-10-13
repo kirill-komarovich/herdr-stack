@@ -8,17 +8,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use herdr_dev::client::Endpoint;
-use herdr_dev::{daemon, state};
+use herdr_stack::client::Endpoint;
+use herdr_stack::{daemon, state};
 
 const PATIENCE: Duration = Duration::from_secs(5);
 
 fn exe() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
+    Path::new(env!("CARGO_BIN_EXE_herdr-stack"))
 }
 
 fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("herdr-dev-daemon-{name}"));
+    let root = std::env::temp_dir().join(format!("herdr-stack-daemon-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("scratch root");
     root

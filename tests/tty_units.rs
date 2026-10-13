@@ -7,17 +7,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use herdr_dev::client::{Endpoint, Link, Target};
-use herdr_dev::local;
-use herdr_dev::manifest::Project;
-use herdr_dev::store::{Identity, Record, Store};
-use herdr_dev::unit::{self, State, Status};
+use herdr_stack::client::{Endpoint, Link, Target};
+use herdr_stack::local;
+use herdr_stack::manifest::Project;
+use herdr_stack::store::{Identity, Record, Store};
+use herdr_stack::unit::{self, State, Status};
 
 const PATIENCE: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(25);
 
 fn exe() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
+    Path::new(env!("CARGO_BIN_EXE_herdr-stack"))
 }
 
 fn until(patience: Duration, mut settled: impl FnMut() -> bool) -> bool {
@@ -39,7 +39,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Scratch {
-        let root = std::env::temp_dir().join(format!("herdr-dev-tty-{name}"));
+        let root = std::env::temp_dir().join(format!("herdr-stack-tty-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("scratch");
         Scratch { root }
@@ -52,7 +52,7 @@ impl Scratch {
     fn project(&self, name: &str, manifest: &str) -> Project {
         let dir = self.root.join(name);
         std::fs::create_dir_all(&dir).expect("project dir");
-        let path = dir.join(".herdr-dev.toml");
+        let path = dir.join(".herdr-stack.toml");
         std::fs::write(&path, manifest).expect("manifest");
         Project::load(&path).expect("manifest parses")
     }

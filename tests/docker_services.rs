@@ -12,17 +12,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use herdr_dev::client::{Endpoint, Link, Target};
-use herdr_dev::docker::DOCKER;
-use herdr_dev::manifest::Project;
-use herdr_dev::store::{Cache, Identity, Store};
-use herdr_dev::unit::{self, State, Status};
+use herdr_stack::client::{Endpoint, Link, Target};
+use herdr_stack::docker::DOCKER;
+use herdr_stack::manifest::Project;
+use herdr_stack::store::{Cache, Identity, Store};
+use herdr_stack::unit::{self, State, Status};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(100);
 
 fn exe() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
+    Path::new(env!("CARGO_BIN_EXE_herdr-stack"))
 }
 
 /// A temporary directory holding the state root and the project the rows are about.
@@ -33,7 +33,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Scratch {
-        let root = std::env::temp_dir().join(format!("herdr-dev-docker-{name}"));
+        let root = std::env::temp_dir().join(format!("herdr-stack-docker-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("scratch");
         Scratch {
@@ -50,9 +50,9 @@ impl Scratch {
     /// a project by *name* rather than by path: a directory called `storefront` here would let `down`
     /// reach the real storefront. So the basename is made unmistakably this process's.
     fn project(&self, manifest: &str) -> Project {
-        let dir = self.root.join(format!("herdrdev{}", std::process::id()));
+        let dir = self.root.join(format!("herdrstack{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("project dir");
-        let path = dir.join(".herdr-dev.toml");
+        let path = dir.join(".herdr-stack.toml");
         std::fs::write(&path, manifest).expect("manifest");
         Project::load(&path).expect("manifest parses")
     }
@@ -153,7 +153,7 @@ fn nowhere() -> String {
     format!(
         "unix://{}",
         std::env::temp_dir()
-            .join(format!("herdr-dev-no-docker-{}.sock", std::process::id()))
+            .join(format!("herdr-stack-no-docker-{}.sock", std::process::id()))
             .display()
     )
 }

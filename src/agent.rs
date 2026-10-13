@@ -1,9 +1,9 @@
 //! Handing manifest-writing to a coding agent.
 //!
-//! The plugin never writes a `.herdr-dev.toml` itself — which services you actually start, which are
+//! The plugin never writes a `.herdr-stack.toml` itself — which services you actually start, which are
 //! containerised duplicates of a local unit, and which exiting service is a one-shot are judgement
 //! calls a parser cannot make. So the empty state splits a pane, runs the configured agent in it and
-//! asks it to run the `herdr-dev-manifest` skill.
+//! asks it to run the `herdr-stack-manifest` skill.
 //!
 //! **The plugin knows nothing about how the agent is installed.** Its whole configuration is a `command`
 //! to run, which may be a wrapper, a profile launcher, or a canonical binary. `agent.start` is deliberately not used:
@@ -19,10 +19,10 @@ use toml_edit::DocumentMut;
 
 use crate::herdr::{self, Error, Snapshot, expand_tilde};
 
-const CONFIG: &str = ".config/herdr/plugins/config/herdr-dev/config.toml";
+const CONFIG: &str = ".config/herdr/plugins/config/herdr-stack/config.toml";
 
 /// The skill is user-invocation only, so it has to be called the way a person would call it.
-pub const SKILL_COMMAND: &str = "/herdr-dev-manifest";
+pub const SKILL_COMMAND: &str = "/herdr-stack-manifest";
 
 pub fn config_path() -> PathBuf {
     expand_tilde("~").join(CONFIG)
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn the_repository_root_wins_over_a_pane_sitting_deeper() {
-        let root = std::env::temp_dir().join(format!("herdr-dev-agent-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("herdr-stack-agent-{}", std::process::id()));
         let deep = root.join("app/models");
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(&deep).unwrap();
@@ -233,7 +233,7 @@ mod tests {
     fn the_prompt_calls_the_skill_as_a_person_would_and_names_the_directory() {
         assert_eq!(
             prompt(Path::new("/repos/storefront")),
-            "/herdr-dev-manifest /repos/storefront"
+            "/herdr-stack-manifest /repos/storefront"
         );
     }
 
@@ -243,8 +243,8 @@ mod tests {
             command: vec!["my-wrapper".into()],
         };
         assert_eq!(
-            config.command_line_with("/herdr-dev-manifest /repos/a b"),
-            "my-wrapper '/herdr-dev-manifest /repos/a b'"
+            config.command_line_with("/herdr-stack-manifest /repos/a b"),
+            "my-wrapper '/herdr-stack-manifest /repos/a b'"
         );
     }
 
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn saving_then_loading_round_trips_and_keeps_a_foreign_key() {
-        let dir = std::env::temp_dir().join(format!("herdr-dev-cfg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("herdr-stack-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn saving_into_a_directory_that_does_not_exist_yet_creates_it() {
-        let dir = std::env::temp_dir().join(format!("herdr-dev-cfg-new-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("herdr-stack-cfg-new-{}", std::process::id()));
         let path = dir.join("nested/config.toml");
         save_to(
             &path,

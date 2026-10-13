@@ -19,8 +19,8 @@ use crate::client::{Attached, Endpoint, Link};
 
 /// What the popup hands the pane at open time: one entrypoint serves every unit, as the tail pane's
 /// does.
-pub const PROJECT_ENV: &str = "HERDR_DEV_PROJECT";
-pub const UNIT_ENV: &str = "HERDR_DEV_UNIT";
+pub const PROJECT_ENV: &str = "HERDR_STACK_PROJECT";
+pub const UNIT_ENV: &str = "HERDR_STACK_UNIT";
 pub const ENTRYPOINT: &str = "attach";
 
 /// Ctrl-], which is telnet's escape and which no shell, REPL or debugger binds. It has to be one of

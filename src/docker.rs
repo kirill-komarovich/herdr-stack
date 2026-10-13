@@ -725,16 +725,16 @@ mod tests {
 
     #[test]
     fn uptime_comes_from_the_start_time_docker_inspect_reports() {
-        let recorded = "/herdrdev05probe-plain-1 2026-08-18T21:17:44.678150491Z\n\
-                        /herdrdev05probe-checked-1 2026-08-18T21:17:44.644433581Z\n";
+        let recorded = "/herdrstack05probe-plain-1 2026-08-18T21:17:44.678150491Z\n\
+                        /herdrstack05probe-checked-1 2026-08-18T21:17:44.644433581Z\n";
         let started = parse_started(recorded);
         assert_eq!(started.len(), 2);
-        let plain = started["herdrdev05probe-plain-1"];
+        let plain = started["herdrstack05probe-plain-1"];
         assert_eq!(
             plain.duration_since(UNIX_EPOCH).expect("after the epoch"),
             Duration::from_secs(1_787_087_864)
         );
-        assert!(started["herdrdev05probe-checked-1"] <= plain);
+        assert!(started["herdrstack05probe-checked-1"] <= plain);
         assert!(
             argv(&inspect_command(&["p-db-1"]))
                 .contains(&"{{.Name}} {{.State.StartedAt}}".to_string())

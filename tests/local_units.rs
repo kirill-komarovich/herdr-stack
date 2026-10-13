@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use herdr_dev::client::{Endpoint, Link, Target};
-use herdr_dev::local;
-use herdr_dev::manifest::Project;
-use herdr_dev::store::{Identity, LOG_LINK, Record, Store};
-use herdr_dev::unit::{self, Exit, State, Status};
+use herdr_stack::client::{Endpoint, Link, Target};
+use herdr_stack::local;
+use herdr_stack::manifest::Project;
+use herdr_stack::store::{Identity, LOG_LINK, Record, Store};
+use herdr_stack::unit::{self, Exit, State, Status};
 
 const PATIENCE: Duration = Duration::from_secs(15);
 /// The grace, which the escalation test measures rather than assumes.
@@ -22,7 +22,7 @@ const GRACE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(25);
 
 fn exe() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
+    Path::new(env!("CARGO_BIN_EXE_herdr-stack"))
 }
 
 fn until(patience: Duration, mut settled: impl FnMut() -> bool) -> bool {
@@ -46,7 +46,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str) -> Scratch {
-        let root = std::env::temp_dir().join(format!("herdr-dev-local-{name}"));
+        let root = std::env::temp_dir().join(format!("herdr-stack-local-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("scratch");
         Scratch {
@@ -62,7 +62,7 @@ impl Scratch {
     fn project(&self, name: &str, manifest: &str) -> Project {
         let dir = self.root.join(name);
         std::fs::create_dir_all(&dir).expect("project dir");
-        let path = dir.join(".herdr-dev.toml");
+        let path = dir.join(".herdr-stack.toml");
         std::fs::write(&path, manifest).expect("manifest");
         Project::load(&path).expect("manifest parses")
     }
@@ -247,7 +247,7 @@ fn a_started_unit_runs_under_mise_in_its_own_session_with_its_output_in_the_log(
     assert_eq!(status.state, State::Up);
     assert!(status.uptime.is_some());
 
-    // The symlink is what makes `tail -f .herdr-dev-logs/local-probe.log` work from the project.
+    // The symlink is what makes `tail -f .herdr-stack-logs/local-probe.log` work from the project.
     let through_link = project.root.join(LOG_LINK).join("local-probe.log");
     assert!(
         std::fs::read_to_string(&through_link)
@@ -657,7 +657,7 @@ fn a_daemon_stays_for_as_long_as_it_owns_a_unit_and_the_last_stop_is_its_shutdow
     let idle = Duration::from_millis(150);
     let serving = {
         let state = state.clone();
-        std::thread::spawn(move || herdr_dev::daemon::serve_with_idle(&state, idle))
+        std::thread::spawn(move || herdr_stack::daemon::serve_with_idle(&state, idle))
     };
 
     let mut link = Endpoint::at(&state)

@@ -11,13 +11,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use herdr_dev::client::Endpoint;
+use herdr_stack::client::Endpoint;
 
 const PATIENCE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
 fn exe() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
+    Path::new(env!("CARGO_BIN_EXE_herdr-stack"))
 }
 
 /// Not `TMPDIR`: macOS puts it under `/var/folders/…`, and a socket path built from it outgrows
@@ -54,11 +54,11 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str, manifest: &str) -> Scratch {
-        let root = staging(&format!("herdr-dev-api-{name}"));
+        let root = staging(&format!("herdr-stack-api-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         let project = root.join("storefront");
         std::fs::create_dir_all(&project).expect("project dir");
-        std::fs::write(project.join(".herdr-dev.toml"), manifest).expect("manifest");
+        std::fs::write(project.join(".herdr-stack.toml"), manifest).expect("manifest");
         Scratch { root, project }
     }
 
@@ -116,7 +116,7 @@ fn run(scratch: &Scratch, mode: &str, units: &[&str]) -> Said {
         .arg(scratch.state())
         .args(units)
         .output()
-        .expect("herdr-dev runs");
+        .expect("herdr-stack runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
     Said {
         json: serde_json::from_str(&stdout).unwrap_or_else(|error| {

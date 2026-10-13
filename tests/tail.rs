@@ -18,9 +18,9 @@ struct Tailing {
 
 impl Tailing {
     fn of(log: &Path, out: PathBuf) -> Tailing {
-        let child = Command::new(env!("CARGO_BIN_EXE_herdr-dev"))
+        let child = Command::new(env!("CARGO_BIN_EXE_herdr-stack"))
             .arg("tail")
-            .env("HERDR_DEV_LOG", log)
+            .env("HERDR_STACK_LOG", log)
             .stdout(std::fs::File::create(&out).expect("stdout file"))
             .stderr(Stdio::null())
             .spawn()
@@ -56,7 +56,7 @@ fn append(log: &Path, line: &str) {
 
 #[test]
 fn the_pane_follows_appended_lines_and_survives_the_log_being_truncated() {
-    let dir = std::env::temp_dir().join("herdr-dev-tail-mode");
+    let dir = std::env::temp_dir().join("herdr-stack-tail-mode");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch");
     let log = dir.join("local-vite.log");

@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use crate::cli::{Act, Ask};
 use crate::state;
 
-pub const USAGE: &str = "usage: herdr-dev [daemon [--state-root <dir>]|tail|attach]
-       herdr-dev status [--project <dir>]
-       herdr-dev start|stop|restart [--project <dir>] <unit>...";
+pub const USAGE: &str = "usage: herdr-stack [daemon [--state-root <dir>]|tail|attach]
+       herdr-stack status [--project <dir>]
+       herdr-stack start|stop|restart [--project <dir>] <unit>...";
 
 const STATE_ROOT: &str = "--state-root";
 const PROJECT: &str = "--project";

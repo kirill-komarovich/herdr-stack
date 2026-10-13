@@ -1,11 +1,11 @@
 use std::process::{Command, Output};
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_herdr-dev"))
+    Command::new(env!("CARGO_BIN_EXE_herdr-stack"))
         .args(args)
-        .env_remove("HERDR_DEV_LOG")
+        .env_remove("HERDR_STACK_LOG")
         .output()
-        .expect("herdr-dev runs")
+        .expect("herdr-stack runs")
 }
 
 #[test]
@@ -13,7 +13,7 @@ fn tail_mode_is_selected_by_argv_and_says_what_it_is_missing() {
     let output = run(&["tail"]);
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("HERDR_DEV_LOG"), "tail said {stderr}");
+    assert!(stderr.contains("HERDR_STACK_LOG"), "tail said {stderr}");
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn unknown_argv_exits_non_zero_with_a_usage_line() {
         assert!(output.stdout.is_empty(), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("usage: herdr-dev"),
+            stderr.contains("usage: herdr-stack"),
             "{args:?} said {stderr}"
         );
     }

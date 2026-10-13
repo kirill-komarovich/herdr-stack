@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::herdr::expand_tilde;
 
-const ROOT: &str = ".local/state/herdr/plugins/herdr-dev";
+const ROOT: &str = ".local/state/herdr/plugins/herdr-stack";
 
 pub fn root() -> PathBuf {
     expand_tilde("~").join(ROOT)
@@ -31,13 +31,13 @@ mod tests {
         let home = std::env::var("HOME").expect("HOME");
         assert_eq!(
             root(),
-            PathBuf::from(format!("{home}/.local/state/herdr/plugins/herdr-dev"))
+            PathBuf::from(format!("{home}/.local/state/herdr/plugins/herdr-stack"))
         );
     }
 
     #[test]
     fn the_socket_and_the_lock_sit_side_by_side_in_the_root() {
-        let root = PathBuf::from("/state/herdr-dev");
+        let root = PathBuf::from("/state/herdr-stack");
         assert_eq!(socket_path(&root), root.join("daemon.sock"));
         assert_eq!(lock_path(&root), root.join("daemon.lock"));
     }

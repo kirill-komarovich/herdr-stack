@@ -10,13 +10,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use herdr_dev::client::{Endpoint, Link, Target};
-use herdr_dev::docker::DOCKER;
-use herdr_dev::local;
-use herdr_dev::manifest::Project;
-use herdr_dev::peek::Source;
-use herdr_dev::tail::RESTARTED;
-use herdr_dev::unit;
+use herdr_stack::client::{Endpoint, Link, Target};
+use herdr_stack::docker::DOCKER;
+use herdr_stack::local;
+use herdr_stack::manifest::Project;
+use herdr_stack::peek::Source;
+use herdr_stack::tail::RESTARTED;
+use herdr_stack::unit;
 
 mod support;
 
@@ -60,7 +60,7 @@ impl Stage {
         // directory called `storefront` here would let a compose verb reach the real storefront.
         let dir = root.join(format!("hdproj{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a project");
-        let path = dir.join(".herdr-dev.toml");
+        let path = dir.join(".herdr-stack.toml");
         std::fs::write(&path, manifest).expect("manifest");
         let project = Project::load(&path).expect("the manifest parses");
 
@@ -75,7 +75,8 @@ impl Stage {
     }
 
     fn state(&self) -> PathBuf {
-        self.root.join("home/.local/state/herdr/plugins/herdr-dev")
+        self.root
+            .join("home/.local/state/herdr/plugins/herdr-stack")
     }
 
     fn link(&self) -> Link {

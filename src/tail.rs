@@ -14,9 +14,9 @@ use std::time::Duration;
 
 /// The three names the plugin manifest and the TUI must agree on: the pane is declared once and
 /// carries the log path in at open time, so one entrypoint serves every unit.
-pub const PLUGIN_ID: &str = "herdr-dev";
+pub const PLUGIN_ID: &str = "herdr-stack";
 pub const ENTRYPOINT: &str = "tail";
-pub const LOG_ENV: &str = "HERDR_DEV_LOG";
+pub const LOG_ENV: &str = "HERDR_STACK_LOG";
 
 const POLL: Duration = Duration::from_millis(150);
 pub const RESTARTED: &str = "── log restarted ──";
@@ -153,7 +153,7 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let dir = std::env::temp_dir().join(format!("herdr-dev-tail-{name}"));
+            let dir = std::env::temp_dir().join(format!("herdr-stack-tail-{name}"));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch");
             Scratch(dir)
@@ -289,7 +289,7 @@ mod tests {
                 .iter()
                 .map(|word| word.as_str().expect("word"))
                 .collect();
-            assert_eq!(command, ["./target/release/herdr-dev", id]);
+            assert_eq!(command, ["./target/release/herdr-stack", id]);
         }
     }
 }

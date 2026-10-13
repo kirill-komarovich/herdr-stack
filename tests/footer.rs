@@ -10,9 +10,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
-use herdr_dev::daemon::PROTOCOL;
-use herdr_dev::peek::NO_REPO_LOG;
-use herdr_dev::view::NOT_A_REPO;
+use herdr_stack::daemon::PROTOCOL;
+use herdr_stack::peek::NO_REPO_LOG;
+use herdr_stack::view::NOT_A_REPO;
 
 mod support;
 
@@ -38,7 +38,7 @@ impl Stage {
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         std::fs::create_dir_all(home.join(".config/herdr")).expect("a herdr config dir");
-        std::fs::create_dir_all(home.join(".local/state/herdr/plugins/herdr-dev"))
+        std::fs::create_dir_all(home.join(".local/state/herdr/plugins/herdr-stack"))
             .expect("a state root");
         Stage {
             root,
@@ -50,7 +50,7 @@ impl Stage {
     fn repo(&self, name: &str, manifest: &str) -> PathBuf {
         let dir = self.root.join(format!("hdf{}{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a repo");
-        std::fs::write(dir.join(".herdr-dev.toml"), manifest).expect("a manifest");
+        std::fs::write(dir.join(".herdr-stack.toml"), manifest).expect("a manifest");
         dir
     }
 
@@ -63,7 +63,7 @@ impl Stage {
         );
         fake_daemon(
             self.home
-                .join(".local/state/herdr/plugins/herdr-dev/daemon.sock"),
+                .join(".local/state/herdr/plugins/herdr-stack/daemon.sock"),
             protocol,
         );
         self.pty = Some(Pty::of(&self.home, repo, cols));

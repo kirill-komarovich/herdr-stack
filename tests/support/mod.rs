@@ -23,7 +23,7 @@ const TIOCSWINSZ: libc::c_ulong = 0x8008_7467;
 const TIOCSWINSZ: libc::Ioctl = libc::TIOCSWINSZ;
 
 pub fn exe() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_herdr-dev"))
+    Path::new(env!("CARGO_BIN_EXE_herdr-stack"))
 }
 
 /// Not `TMPDIR`: macOS puts it under `/var/folders/…`, and a socket path built from it outgrows

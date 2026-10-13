@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use herdr_dev::client::{Endpoint, Link, Target};
-use herdr_dev::local;
-use herdr_dev::manifest::Project;
-use herdr_dev::store::{LOG_LINK, project_key};
-use herdr_dev::unit::{self, State, Status};
+use herdr_stack::client::{Endpoint, Link, Target};
+use herdr_stack::local;
+use herdr_stack::manifest::Project;
+use herdr_stack::store::{LOG_LINK, project_key};
+use herdr_stack::unit::{self, State, Status};
 
 mod support;
 
@@ -30,7 +30,7 @@ const ESC: &str = "\u{1b}";
 const EXAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifests");
 
 fn example(name: &str) -> String {
-    std::fs::read_to_string(PathBuf::from(EXAMPLES).join(format!("{name}.herdr-dev.toml")))
+    std::fs::read_to_string(PathBuf::from(EXAMPLES).join(format!("{name}.herdr-stack.toml")))
         .unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 
@@ -72,7 +72,7 @@ impl Stage {
 
     fn repo(&self, name: &str, manifest: &str) -> PathBuf {
         let dir = self.bare(name);
-        std::fs::write(dir.join(".herdr-dev.toml"), manifest).expect("a manifest");
+        std::fs::write(dir.join(".herdr-stack.toml"), manifest).expect("a manifest");
         dir
     }
 
@@ -90,7 +90,7 @@ impl Stage {
     }
 
     fn state(&self) -> PathBuf {
-        self.home.join(".local/state/herdr/plugins/herdr-dev")
+        self.home.join(".local/state/herdr/plugins/herdr-stack")
     }
 
     /// What an included repo's own popup would ask the daemon: the same socket, its own project.
@@ -101,7 +101,7 @@ impl Stage {
     }
 
     fn project(&self, repo: &Path) -> Project {
-        Project::load(repo.join(".herdr-dev.toml")).expect("the manifest parses")
+        Project::load(repo.join(".herdr-stack.toml")).expect("the manifest parses")
     }
 }
 
@@ -308,11 +308,11 @@ fn six_included_repos_stay_six_rows_and_each_one_that_cannot_be_read_says_why() 
         "{screen}"
     );
     assert!(
-        row_of(&screen, "backoffice").contains("no .herdr-dev.toml in"),
+        row_of(&screen, "backoffice").contains("no .herdr-stack.toml in"),
         "{screen}"
     );
     assert!(
-        row_of(&screen, "broken").contains("broken .herdr-dev.toml: TOML parse error"),
+        row_of(&screen, "broken").contains("broken .herdr-stack.toml: TOML parse error"),
         "{screen}"
     );
     assert!(

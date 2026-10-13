@@ -1,4 +1,4 @@
-//! Reader for a project's `.herdr-dev.toml`.
+//! Reader for a project's `.herdr-stack.toml`.
 //!
 //! Two tiers of complaint, because a typo must not lock you out of a project: anything attributable
 //! to a single unit leaves the unit in the model marked broken, while a problem with the file as a

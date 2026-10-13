@@ -473,7 +473,7 @@ mod tests {
     use std::sync::mpsc;
 
     fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("herdr-dev-client-{name}"));
+        let root = std::env::temp_dir().join(format!("herdr-stack-client-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("temp root");
         root
@@ -510,7 +510,7 @@ mod tests {
 
     fn argv(endpoint: &Endpoint) -> Vec<OsString> {
         endpoint
-            .command(Path::new("/opt/herdr-dev"))
+            .command(Path::new("/opt/herdr-stack"))
             .get_args()
             .map(OsString::from)
             .collect()

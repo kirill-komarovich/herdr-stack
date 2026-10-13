@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use herdr_dev::manifest::Project;
+use herdr_stack::manifest::Project;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/manifests");
 
 fn load(project: &str) -> Project {
-    let path = PathBuf::from(DIR).join(format!("{project}.herdr-dev.toml"));
+    let path = PathBuf::from(DIR).join(format!("{project}.herdr-stack.toml"));
     Project::load(&path).unwrap_or_else(|error| panic!("{error}"))
 }
 
@@ -39,11 +39,11 @@ fn every_example_manifest_parses_without_a_single_problem() {
     assert_eq!(
         found,
         [
-            "billing.herdr-dev.toml",
-            "storefront.herdr-dev.toml",
-            "backoffice.herdr-dev.toml",
-            "photos.herdr-dev.toml",
-            "accounts.herdr-dev.toml",
+            "billing.herdr-stack.toml",
+            "storefront.herdr-stack.toml",
+            "backoffice.herdr-stack.toml",
+            "photos.herdr-stack.toml",
+            "accounts.herdr-stack.toml",
         ]
     );
 }

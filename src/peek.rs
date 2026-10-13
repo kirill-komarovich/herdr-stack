@@ -285,7 +285,7 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let dir = std::env::temp_dir().join(format!("herdr-dev-peek-{name}"));
+            let dir = std::env::temp_dir().join(format!("herdr-stack-peek-{name}"));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch");
             Scratch(dir)
@@ -303,7 +303,7 @@ mod tests {
     }
 
     fn project(text: &str) -> Project {
-        Project::parse(text, Path::new("/repos/storefront/.herdr-dev.toml")).expect("manifest")
+        Project::parse(text, Path::new("/repos/storefront/.herdr-stack.toml")).expect("manifest")
     }
 
     fn peeking(path: &Path) -> Peek {
@@ -325,7 +325,7 @@ mod tests {
             "[local.vite]\ncmd = [\"bin/vite\"]\n[docker]\nnames = [\"db\"]\n\
              [includes.accounts]\npath = \"/repos/accounts\"\n",
         );
-        let store = Store::at("/state/herdr-dev");
+        let store = Store::at("/state/herdr-stack");
         let log = Source::of(&store, &manifest, unit::LOCAL, "vite").expect("a log");
         match &log {
             Source::Log { unit, path } => {

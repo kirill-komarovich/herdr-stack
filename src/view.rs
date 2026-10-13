@@ -590,7 +590,7 @@ mod tests {
         );
         let broken_note = note_of(&rows, "broken");
         assert!(
-            broken_note.starts_with("broken .herdr-dev.toml: TOML parse error"),
+            broken_note.starts_with("broken .herdr-stack.toml: TOML parse error"),
             "{broken_note}"
         );
         assert_eq!(broken_note.lines().count(), 1, "{broken_note}");
@@ -719,6 +719,6 @@ mod tests {
     fn example(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/manifests")
-            .join(format!("{name}.herdr-dev.toml"))
+            .join(format!("{name}.herdr-stack.toml"))
     }
 }

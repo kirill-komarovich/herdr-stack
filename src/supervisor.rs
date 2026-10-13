@@ -532,7 +532,7 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let root = std::env::temp_dir().join(format!("herdr-dev-supervisor-{name}"));
+            let root = std::env::temp_dir().join(format!("herdr-stack-supervisor-{name}"));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("scratch");
             Scratch(root)

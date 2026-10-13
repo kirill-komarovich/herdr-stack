@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::Instant;
 
-use herdr_dev::attach::{PROJECT_ENV, UNIT_ENV};
-use herdr_dev::client::{Endpoint, Link, Target};
-use herdr_dev::manifest::Project;
-use herdr_dev::unit::{self, State, Status};
+use herdr_stack::attach::{PROJECT_ENV, UNIT_ENV};
+use herdr_stack::client::{Endpoint, Link, Target};
+use herdr_stack::manifest::Project;
+use herdr_stack::unit::{self, State, Status};
 
 mod support;
 
@@ -19,7 +19,7 @@ use support::{PATIENCE, Pty, STEP, staging};
 
 /// Where the pane's own `Endpoint::spelled_out()` lands, given the home it is handed.
 fn state_root(home: &Path) -> PathBuf {
-    home.join(".local/state/herdr/plugins/herdr-dev")
+    home.join(".local/state/herdr/plugins/herdr-stack")
 }
 
 fn until(mut settled: impl FnMut() -> bool) -> bool {
@@ -45,7 +45,7 @@ struct Stage {
 impl Stage {
     /// `script` is the shell the unit runs, written to a file so the manifest stays plain argv.
     fn new(name: &str, script: &str) -> Stage {
-        let home = staging(&format!("herdr-dev-attach-{name}"));
+        let home = staging(&format!("herdr-stack-attach-{name}"));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(state_root(&home)).expect("state root");
 
@@ -53,7 +53,7 @@ impl Stage {
         std::fs::create_dir_all(&root).expect("project dir");
         let path = root.join("probe.sh");
         std::fs::write(&path, script).expect("script");
-        let manifest = root.join(".herdr-dev.toml");
+        let manifest = root.join(".herdr-stack.toml");
         std::fs::write(
             &manifest,
             format!(
@@ -65,7 +65,7 @@ impl Stage {
         .expect("manifest");
 
         let daemon = Endpoint::at(state_root(&home))
-            .command(Path::new(env!("CARGO_BIN_EXE_herdr-dev")))
+            .command(Path::new(env!("CARGO_BIN_EXE_herdr-stack")))
             .spawn()
             .expect("daemon spawns");
         let stage = Stage {
@@ -314,8 +314,8 @@ fn typing_at_a_unit_that_is_not_running_says_so_rather_than_opening_onto_nothing
 }
 
 fn log_of(stage: &Stage, name: &str) -> String {
-    let path = herdr_dev::store::Store::at(state_root(&stage.home))
-        .slot(&herdr_dev::store::Identity {
+    let path = herdr_stack::store::Store::at(state_root(&stage.home))
+        .slot(&herdr_stack::store::Identity {
             path: stage.project.root.clone(),
             name: stage.project.name.clone(),
         })

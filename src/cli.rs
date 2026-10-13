@@ -434,7 +434,7 @@ mod tests {
     use std::path::Path;
 
     fn project(text: &str) -> Project {
-        Project::parse(text, Path::new("/repos/storefront/.herdr-dev.toml")).expect("manifest")
+        Project::parse(text, Path::new("/repos/storefront/.herdr-stack.toml")).expect("manifest")
     }
 
     #[test]
@@ -482,7 +482,7 @@ mod tests {
         let focused = project("[local.rails]\ncmd = [\"rails\"]\n[docker]\nnames = [\"db\"]\n");
         let included = Project::parse(
             "[local.rails]\ncmd = [\"rails\"]\n",
-            Path::new("/repos/accounts/.herdr-dev.toml"),
+            Path::new("/repos/accounts/.herdr-stack.toml"),
         )
         .expect("manifest");
         let listed = vec![(None, &focused), (Some("accounts"), &included)];
@@ -508,7 +508,7 @@ mod tests {
         let focused = project("[local.rails]\ncmd = [\"rails\"]\n");
         let included = Project::parse(
             "[local.rails]\ncmd = [\"rails\"]\n",
-            Path::new("/repos/accounts/.herdr-dev.toml"),
+            Path::new("/repos/accounts/.herdr-stack.toml"),
         )
         .expect("manifest");
         let listed = vec![(None, &focused), (Some("accounts"), &included)];
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn the_project_is_the_nearest_manifest_above_the_directory_named() {
-        let root = std::env::temp_dir().join(format!("herdr-dev-cli-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("herdr-stack-cli-{}", std::process::id()));
         let deep = root.join("app/models");
         fs::create_dir_all(&deep).expect("dirs");
         fs::write(

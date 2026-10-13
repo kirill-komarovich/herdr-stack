@@ -199,7 +199,7 @@ mod tests {
     const SLOW: Duration = Duration::from_millis(1500);
 
     fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("herdr-dev-errand-{name}"));
+        let root = std::env::temp_dir().join(format!("herdr-stack-errand-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("temp root");
         root

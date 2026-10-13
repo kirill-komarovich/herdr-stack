@@ -74,7 +74,7 @@ pub fn request_with_timeout(
     stream.set_read_timeout(Some(timeout)).map_err(Error::Io)?;
     stream.set_write_timeout(Some(TIMEOUT)).map_err(Error::Io)?;
 
-    let line = json!({"id": format!("herdr-dev-{}", std::process::id()), "method": method, "params": params});
+    let line = json!({"id": format!("herdr-stack-{}", std::process::id()), "method": method, "params": params});
     let mut writer = &stream;
     writeln!(writer, "{line}").map_err(Error::Io)?;
     writer.flush().map_err(Error::Io)?;

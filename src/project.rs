@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::herdr::Snapshot;
 use crate::manifest::Project;
 
-pub const MANIFEST_NAME: &str = ".herdr-dev.toml";
+pub const MANIFEST_NAME: &str = ".herdr-stack.toml";
 
 /// Walks `start` and its parents, innermost first.
 pub fn nearest_manifest(start: &Path) -> Option<PathBuf> {
@@ -79,7 +79,7 @@ mod tests {
 
     impl Tree {
         fn new(name: &str) -> Tree {
-            let root = std::env::temp_dir().join(format!("herdr-dev-project-{name}"));
+            let root = std::env::temp_dir().join(format!("herdr-stack-project-{name}"));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("temp tree");
             Tree(root)

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use herdr_dev::daemon::PROTOCOL;
+use herdr_stack::daemon::PROTOCOL;
 
 mod support;
 
@@ -35,7 +35,7 @@ impl Stage {
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         std::fs::create_dir_all(home.join(".config/herdr")).expect("a herdr config dir");
-        std::fs::create_dir_all(home.join(".local/state/herdr/plugins/herdr-dev"))
+        std::fs::create_dir_all(home.join(".local/state/herdr/plugins/herdr-stack"))
             .expect("a state root");
         Stage {
             root,
@@ -47,7 +47,7 @@ impl Stage {
     fn repo(&self) -> PathBuf {
         let dir = self.root.join(format!("hdl{}repo", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a repo");
-        std::fs::write(dir.join(".herdr-dev.toml"), MANIFEST).expect("a manifest");
+        std::fs::write(dir.join(".herdr-stack.toml"), MANIFEST).expect("a manifest");
         dir
     }
 
@@ -58,7 +58,7 @@ impl Stage {
         );
         let reads = stalling_daemon(
             self.home
-                .join(".local/state/herdr/plugins/herdr-dev/daemon.sock"),
+                .join(".local/state/herdr/plugins/herdr-stack/daemon.sock"),
         );
         self.pty = Some(Pty::of(&self.home, repo, COLS));
         reads
