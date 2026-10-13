@@ -1,7 +1,8 @@
 //! The spawn recipe and the group signals, and nothing about who called for them.
 //!
-//! Three parts of the spawn are load-bearing and none of them is optional: `mise exec --` with cwd
-//! set, so the toolchain and every port come from the repo's own mise files rather than the manifest;
+//! Three parts of the spawn are load-bearing and none of them is optional: the directory's own env
+//! loaders with cwd set — `mise exec --` and `direnv exec`, whichever are installed — so the toolchain
+//! and every port come from the repo's own files rather than the manifest, and a restart re-reads them;
 //! **`setsid(2)`**, so the unit outlives the pane the popup was drawn over — redirecting stdio alone
 //! is measurably not enough, it is the shared session that kills; and stdio pointed at a log with
 //! stdin from `/dev/null`, so a dev server never wedges a Herdr pipe or takes SIGPIPE from a dying
@@ -12,9 +13,10 @@
 //! rather than written to directly. Everything downstream of the log is unchanged by the swap.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::File;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -22,8 +24,21 @@ use std::time::SystemTime;
 use crate::herdr::expand_tilde;
 use crate::terminal::{self, Terminal};
 
-/// Spelled out for the same reason the state root is: a popup inherits no `PATH` worth trusting.
-pub const MISE: &str = "~/.local/bin/mise";
+/// Spelled out for the same reason the state root is: a popup inherits no `PATH` worth trusting. First
+/// found wins, so a user-local install beats the system's as it would on a login shell's `PATH`.
+const MISE: [&str; 4] = [
+    "~/.local/bin/mise",
+    "/opt/homebrew/bin/mise",
+    "/usr/local/bin/mise",
+    "/usr/bin/mise",
+];
+const DIRENV: [&str; 5] = [
+    "~/.local/bin/direnv",
+    "~/.local/share/mise/shims/direnv",
+    "/opt/homebrew/bin/direnv",
+    "/usr/local/bin/direnv",
+    "/usr/bin/direnv",
+];
 
 /// A missing toolchain must fail fast into the log rather than hang on a silent download.
 const NO_AUTO_INSTALL: (&str, &str) = ("MISE_EXEC_AUTO_INSTALL", "false");
@@ -54,19 +69,59 @@ pub struct Spawned {
     pub terminal: Option<Arc<Terminal>>,
 }
 
-pub fn mise_path() -> PathBuf {
-    expand_tilde(MISE)
+/// What turns a unit's directory into the env a shell opened there would have. Each is used when it is
+/// installed, whether or not the repo has a file for it: neither does anything to a directory it has
+/// no config for, and a global mise config applies everywhere.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Loaders {
+    pub mise: Option<PathBuf>,
+    pub direnv: Option<PathBuf>,
+}
+
+impl Loaders {
+    /// Looked up at every spawn, so installing one takes effect on the next restart.
+    pub fn installed() -> Loaders {
+        Loaders {
+            mise: first_present(MISE),
+            direnv: first_present(DIRENV),
+        }
+    }
+}
+
+fn first_present<const N: usize>(candidates: [&str; N]) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .map(expand_tilde)
+        .find(|path| path.is_file())
+}
+
+pub fn mise_path() -> Option<PathBuf> {
+    first_present(MISE)
+}
+
+pub fn direnv_path() -> Option<PathBuf> {
+    first_present(DIRENV)
 }
 
 /// Everything about the spawn except the fork, so the recipe can be read off a `Command`. Env layers
 /// innermost last: `base` — the machine-level part of the daemon's own, `crate::env` for why only
 /// that part — then the manifest's, then ours.
-pub fn command<I>(spec: &Spec, mise: &Path, base: I) -> Command
+pub fn command<I>(spec: &Spec, loaders: &Loaders, base: I) -> Command
 where
     I: IntoIterator<Item = (String, String)>,
 {
-    let mut command = Command::new(mise);
-    command.arg("exec").arg("--").args(&spec.cmd);
+    let mut argv: Vec<OsString> = Vec::new();
+    // mise outermost: an `.envrc` is a script, and `layout ruby` or `use node` in it needs the repo's
+    // toolchain already on `PATH` when it runs.
+    if let Some(mise) = &loaders.mise {
+        argv.extend([mise.into(), "exec".into(), "--".into()]);
+    }
+    if let Some(direnv) = &loaders.direnv {
+        argv.extend([direnv.into(), "exec".into(), spec.cwd.clone().into()]);
+    }
+    argv.extend(spec.cmd.iter().map(OsString::from));
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]);
     command.current_dir(&spec.cwd);
     command.env_clear();
     command.envs(base);
@@ -81,7 +136,7 @@ where
 /// The caller owns the log's rotation. A `tty` unit never writes to `log` itself; the thread reading
 /// its terminal does.
 pub fn spawn(spec: &Spec, log: File) -> std::io::Result<Spawned> {
-    let mut command = command(spec, &mise_path(), crate::env::machine_level());
+    let mut command = command(spec, &Loaders::installed(), crate::env::machine_level());
     command.stdin(Stdio::null());
     let pty = match spec.tty {
         false => {
@@ -218,6 +273,21 @@ fn ps_field(pid: u32, field: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn only_mise() -> Loaders {
+        Loaders {
+            mise: Some(PathBuf::from("/opt/mise")),
+            direnv: None,
+        }
+    }
+
+    fn argv_of(command: &Command) -> Vec<String> {
+        std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
 
     fn spec() -> Spec {
         Spec {
@@ -245,7 +315,7 @@ mod tests {
         let base = base
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()));
-        command(&spec(), Path::new("/opt/mise"), base)
+        command(&spec(), &only_mise(), base)
     }
 
     fn built_on_a_terminal(base: &[(&str, &str)], env: &[(&str, &str)]) -> Command {
@@ -258,7 +328,7 @@ mod tests {
         let base = base
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()));
-        command(&spec, Path::new("/opt/mise"), base)
+        command(&spec, &only_mise(), base)
     }
 
     #[test]
@@ -283,13 +353,65 @@ mod tests {
     #[test]
     fn a_unit_runs_through_mise_exec_from_its_own_directory() {
         let command = built(&[]);
-        assert_eq!(command.get_program(), "/opt/mise");
-        let argv: Vec<String> = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(argv, ["exec", "--", "bin/vite", "dev"]);
+        assert_eq!(
+            argv_of(&command),
+            ["/opt/mise", "exec", "--", "bin/vite", "dev"]
+        );
         assert_eq!(command.get_current_dir(), Some(Path::new("/repos/storefront")));
+    }
+
+    #[test]
+    fn direnv_loads_the_units_own_directory_inside_mise() {
+        let loaders = Loaders {
+            mise: Some(PathBuf::from("/opt/mise")),
+            direnv: Some(PathBuf::from("/opt/direnv")),
+        };
+        assert_eq!(
+            argv_of(&command(&spec(), &loaders, [])),
+            [
+                "/opt/mise",
+                "exec",
+                "--",
+                "/opt/direnv",
+                "exec",
+                "/repos/storefront",
+                "bin/vite",
+                "dev"
+            ]
+        );
+        let direnv_alone = Loaders {
+            mise: None,
+            direnv: Some(PathBuf::from("/opt/direnv")),
+        };
+        assert_eq!(
+            argv_of(&command(&spec(), &direnv_alone, [])),
+            ["/opt/direnv", "exec", "/repos/storefront", "bin/vite", "dev"]
+        );
+    }
+
+    #[test]
+    fn with_no_loader_installed_a_unit_runs_its_own_argv() {
+        let command = command(&spec(), &Loaders::default(), []);
+        assert_eq!(argv_of(&command), ["bin/vite", "dev"]);
+        assert_eq!(command.get_current_dir(), Some(Path::new("/repos/storefront")));
+    }
+
+    #[test]
+    fn the_first_install_found_is_the_one_used() {
+        let dir = std::env::temp_dir().join(format!("herdr-stack-loaders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let second = dir.join("second");
+        let third = dir.join("third");
+        std::fs::write(&second, "").expect("second");
+        std::fs::write(&third, "").expect("third");
+        let candidates = [
+            dir.join("first").to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+            third.to_string_lossy().into_owned(),
+        ];
+        let found = first_present(candidates.each_ref().map(String::as_str));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found, Some(second));
     }
 
     #[test]

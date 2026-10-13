@@ -42,6 +42,7 @@ fn until(patience: Duration, mut settled: impl FnMut() -> bool) -> bool {
 struct Scratch {
     root: PathBuf,
     trusted: Vec<PathBuf>,
+    allowed: Vec<PathBuf>,
 }
 
 impl Scratch {
@@ -52,6 +53,7 @@ impl Scratch {
         Scratch {
             root,
             trusted: Vec::new(),
+            allowed: Vec::new(),
         }
     }
 
@@ -70,7 +72,7 @@ impl Scratch {
     /// mise reads a `mise.toml` only from a directory it has been told to trust.
     fn trust(&mut self, project: &Project, mise: &str) {
         std::fs::write(project.root.join("mise.toml"), mise).expect("mise.toml");
-        let trusted = Command::new(local::mise_path())
+        let trusted = Command::new(local::mise_path().expect("mise is installed"))
             .arg("trust")
             .arg(&project.root)
             .output()
@@ -78,12 +80,34 @@ impl Scratch {
         assert!(trusted.status.success(), "{trusted:?}");
         self.trusted.push(project.root.clone());
     }
+
+    /// direnv loads an `.envrc` only once its current content has been allowed.
+    fn allow(&mut self, project: &Project, envrc: &str) {
+        std::fs::write(project.root.join(".envrc"), envrc).expect(".envrc");
+        let direnv = local::direnv_path().expect("direnv is installed");
+        let allowed = Command::new(direnv)
+            .arg("allow")
+            .arg(&project.root)
+            .output()
+            .expect("direnv allow runs");
+        assert!(allowed.status.success(), "{allowed:?}");
+        self.allowed.push(project.root.clone());
+    }
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        for path in &self.allowed {
+            let Some(direnv) = local::direnv_path() else {
+                break;
+            };
+            let _ = Command::new(direnv).arg("deny").arg(path).output();
+        }
         for path in &self.trusted {
-            let _ = Command::new(local::mise_path())
+            let Some(mise) = local::mise_path() else {
+                break;
+            };
+            let _ = Command::new(mise)
                 .arg("trust")
                 .arg("--untrust")
                 .arg(path)
@@ -584,6 +608,42 @@ fn a_unit_this_project_already_runs_is_refused_by_the_pid_it_is_running_as() {
 
     assert_eq!(link.stop(&project, &unit_of(&project, "sleeper")), Ok(None));
     assert!(local::group_empty(leader));
+}
+
+#[test]
+fn a_restart_rereads_what_mise_and_direnv_say_about_the_directory() {
+    let mut scratch = Scratch::new("loaders");
+    let project = scratch.project(
+        "storefront",
+        "[local.probe]\n\
+         cmd = [\"sh\", \"-c\", \"echo mise=$HD_FROM_MISE direnv=$HD_FROM_DIRENV; sleep 30\"]\n",
+    );
+    scratch.trust(&project, "[env]\nHD_FROM_MISE = \"first\"\n");
+    scratch.allow(&project, "export HD_FROM_DIRENV=first\n");
+    let state = scratch.state();
+    let daemon = Daemon::serving(&state);
+    let mut link = daemon.link();
+    let unit = unit_of(&project, "probe");
+
+    link.start(&project, &unit).expect("start");
+    assert!(
+        until(PATIENCE, || log_of(&state, &project, "probe")
+            .contains("mise=first direnv=first")),
+        "{:?}",
+        log_of(&state, &project, "probe")
+    );
+
+    scratch.trust(&project, "[env]\nHD_FROM_MISE = \"second\"\n");
+    scratch.allow(&project, "export HD_FROM_DIRENV=second\n");
+    assert_eq!(link.restart(&project, &unit), Ok(None));
+    assert!(
+        until(PATIENCE, || log_of(&state, &project, "probe")
+            .contains("mise=second direnv=second")),
+        "{:?}",
+        log_of(&state, &project, "probe")
+    );
+
+    link.stop(&project, &unit).expect("stop");
 }
 
 #[test]

@@ -13,8 +13,12 @@ herdr plugin install kirill-komarovich/herdr-stack --ref v0.0.1
 The install downloads the release binary for your platform (macOS or Linux, arm64 or x86_64). If there
 is no release for the checked-out version, it builds from source with `cargo` instead.
 
-Requires Herdr 0.8.0 or later, plus `mise`, because every local unit runs through `mise exec`. Docker
-units need `docker compose`, and `lsof` reports listening ports.
+Requires Herdr 0.8.0 or later. Docker units need `docker compose`, and `lsof` reports listening
+ports.
+
+A local unit gets the env a shell in its directory would have. Each start runs it through
+`mise exec` and `direnv exec`, whichever are installed, so a restart picks up a changed `mise.toml`
+or `.envrc`. direnv still wants `direnv allow` after an `.envrc` changes.
 
 The popup and agents call `herdr-stack` by name, so put the installed binary on your `PATH`. It is
 `target/release/herdr-stack` inside the plugin checkout. Then bind the popup in Herdr's `config.toml`:

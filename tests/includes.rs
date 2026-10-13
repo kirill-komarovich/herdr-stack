@@ -48,8 +48,6 @@ impl Stage {
         let home = root.join("home");
         std::fs::create_dir_all(home.join(".local/bin")).expect("a home");
         std::fs::create_dir_all(home.join(".config/herdr")).expect("a herdr config dir");
-        // A unit spawns through mise at a spelled-out path under HOME, and this HOME is not the real one.
-        std::os::unix::fs::symlink(local::mise_path(), home.join(".local/bin/mise")).expect("mise");
         Stage {
             root,
             home,

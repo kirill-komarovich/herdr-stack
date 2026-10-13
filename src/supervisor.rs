@@ -35,13 +35,18 @@ const POLL: Duration = Duration::from_millis(20);
 
 /// What a dev server reads once at boot and never again: a change to any of these is invisible to
 /// the running process until it is restarted.
-const CONFIG_FILES: [&str; 7] = [
+const CONFIG_FILES: [&str; 12] = [
     "package.json",
     "pnpm-lock.yaml",
     "package-lock.json",
     "yarn.lock",
     "Gemfile.lock",
     "mise.toml",
+    ".mise.toml",
+    "mise.local.toml",
+    ".mise.local.toml",
+    ".tool-versions",
+    ".envrc",
     ".env",
 ];
 const CONFIG_PREFIXES: [&str; 1] = ["vite.config."];
@@ -963,6 +968,20 @@ mod tests {
             Some("config changed since start: package.json, vite.config.ts")
         );
         assert_eq!(changed_since(&project.path, after), None);
+    }
+
+    #[test]
+    fn what_mise_and_direnv_read_counts_as_config() {
+        let scratch = Scratch::new("loaders");
+        let project = scratch.project("storefront");
+        let started = SystemTime::now() - Duration::from_secs(60);
+        for name in [".envrc", ".mise.local.toml", "README.md"] {
+            std::fs::write(project.path.join(name), "").expect("write");
+        }
+        assert_eq!(
+            changed_since(&project.path, started).as_deref(),
+            Some("config changed since start: .envrc, .mise.local.toml")
+        );
     }
 
     #[test]

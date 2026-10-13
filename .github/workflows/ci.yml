@@ -15,8 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      # Units spawn through ~/.local/bin/mise, which is where this installer puts it.
+      # The suite runs units under real mise and direnv.
       - run: curl -fsSL https://mise.run | sh
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y direnv
+      - if: runner.os == 'macOS'
+        run: brew install direnv
       - run: cargo test --locked
 
   herdr:
