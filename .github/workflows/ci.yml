@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # Units spawn through ~/.local/bin/mise, which is where this installer puts it.
+      - run: curl -fsSL https://mise.run | sh
+      - run: cargo test --locked
+
+  herdr:
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest is the manifest's min_herdr_version.
+        herdr: ["0.8.0", "0.9.3"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/herdr/run.sh ${{ matrix.herdr }}

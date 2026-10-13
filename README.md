@@ -79,6 +79,14 @@ herdr plugin link .
 
 A linked plugin runs your working tree's `target/release/herdr-stack`, so rebuilding is enough.
 
+`cargo test` runs everything except the tests against a real Herdr. Those start herdr servers of
+their own, so they sit behind the `herdr-tests` feature and run only inside Docker. CI requires them
+against the oldest supported Herdr and the latest:
+
+```sh
+tests/herdr/run.sh 0.8.0 0.9.3
+```
+
 To release, set the same version in `Cargo.toml` and `herdr-plugin.toml`, then push a matching `v*` tag.
 CI builds the binaries and publishes them to a GitHub release.
 
