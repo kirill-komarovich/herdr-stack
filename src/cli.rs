@@ -356,7 +356,9 @@ struct Found<'a> {
 }
 
 /// `rails`, `local-rails` and `accounts:rails` all reach a unit; the qualified spellings exist for
-/// when the bare name is ambiguous, which is the one case a caller cannot resolve on its own.
+/// when the bare name is ambiguous, which is the one case a caller cannot resolve on its own. A bare
+/// name is the focused project's own unit when it has one: the focused project has no repo prefix, so
+/// an include sharing the name would otherwise leave it with no spelling at all.
 fn pick<'a>(
     listed: &[(Option<&'a str>, &'a Project)],
     selector: &str,
@@ -365,18 +367,17 @@ fn pick<'a>(
         Some((repo, unit)) => (Some(repo), unit),
         None => (None, selector),
     };
-    let found: Vec<Found<'a>> = listed
-        .iter()
-        .filter(|(name, _)| repo.is_none() || *name == repo)
-        .flat_map(|(_, project)| {
-            candidates(project).into_iter().map(|(kind, name)| Found {
-                project,
-                kind,
-                name,
-            })
-        })
-        .filter(|found| names(found, unit))
-        .collect();
+    let found = match repo {
+        Some(_) => matching(listed, unit, |name| name == repo),
+        None => {
+            let own = matching(listed, unit, |name| name.is_none());
+            if own.is_empty() {
+                matching(listed, unit, |_| true)
+            } else {
+                own
+            }
+        }
+    };
 
     match found.len() {
         1 => Ok(found.into_iter().next().expect("one match")),
@@ -390,6 +391,25 @@ fn pick<'a>(
                 .join(", ")
         )),
     }
+}
+
+fn matching<'a>(
+    listed: &[(Option<&'a str>, &'a Project)],
+    unit: &str,
+    repo: impl Fn(Option<&str>) -> bool,
+) -> Vec<Found<'a>> {
+    listed
+        .iter()
+        .filter(|(name, _)| repo(*name))
+        .flat_map(|(_, project)| {
+            candidates(project).into_iter().map(|(kind, name)| Found {
+                project,
+                kind,
+                name,
+            })
+        })
+        .filter(|found| names(found, unit))
+        .collect()
 }
 
 fn candidates(project: &Project) -> Vec<(&'static str, String)> {
@@ -504,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn a_name_two_manifests_share_is_refused_with_both_spellings() {
+    fn a_bare_name_the_focused_project_shares_with_an_include_is_the_focused_one() {
         let focused = project("[local.rails]\ncmd = [\"rails\"]\n");
         let included = Project::parse(
             "[local.rails]\ncmd = [\"rails\"]\n",
@@ -513,12 +533,45 @@ mod tests {
         .expect("manifest");
         let listed = vec![(None, &focused), (Some("accounts"), &included)];
 
-        let complaint = pick(&listed, "rails").unwrap_err();
-        assert!(complaint.contains("local-rails"), "{complaint}");
-        assert!(
-            complaint.contains("accounts:local-rails"),
-            "{complaint}"
+        for selector in ["rails", "local-rails"] {
+            assert_eq!(
+                pick(&listed, selector).expect(selector).project.root,
+                focused.root
+            );
+        }
+        assert_eq!(
+            pick(&listed, "accounts:rails")
+                .expect("rails")
+                .project
+                .root,
+            PathBuf::from("/repos/accounts")
         );
+    }
+
+    #[test]
+    fn a_name_only_includes_share_is_refused_with_spellings_that_work() {
+        let focused = project("[docker]\nnames = [\"db\"]\n");
+        let player = Project::parse(
+            "[local.rails]\ncmd = [\"rails\"]\n",
+            Path::new("/repos/accounts/.herdr-stack.toml"),
+        )
+        .expect("manifest");
+        let game = Project::parse(
+            "[local.rails]\ncmd = [\"rails\"]\n",
+            Path::new("/repos/billing/.herdr-stack.toml"),
+        )
+        .expect("manifest");
+        let listed = vec![
+            (None, &focused),
+            (Some("accounts"), &player),
+            (Some("billing"), &game),
+        ];
+
+        let complaint = pick(&listed, "rails").unwrap_err();
+        for spelling in ["accounts:local-rails", "billing:local-rails"] {
+            assert!(complaint.contains(spelling), "{complaint}");
+            assert!(pick(&listed, spelling).is_ok(), "{spelling}");
+        }
     }
 
     #[test]
