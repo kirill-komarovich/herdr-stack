@@ -776,12 +776,12 @@ mod tests {
         let project = scratch.project("storefront");
 
         supervisor
-            .start(&project, &spec("kept", &["sleep", "20"], &project.path))
+            .start(&project, &spec("kept", &["sleep", "600"], &project.path))
             .expect("start");
         supervisor
             .start(
                 &project,
-                &spec("bystopped", &["sleep", "20"], &project.path),
+                &spec("bystopped", &["sleep", "600"], &project.path),
             )
             .expect("start");
         supervisor
@@ -792,9 +792,13 @@ mod tests {
             .expect("start");
 
         supervisor.stop(&project, "bystopped").expect("stop");
+        // Reaped, so its record already says how it ended before the daemon goes.
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while restore_mark(&supervisor, &project, "crashed").is_none()
-            && supervisor.busy()
+        while supervisor
+            .store()
+            .slot(&project)
+            .record(&unit::key(unit::LOCAL, "crashed"))
+            .is_none_or(|record| record.state != State::Dead)
             && std::time::Instant::now() < deadline
         {
             std::thread::sleep(POLL);

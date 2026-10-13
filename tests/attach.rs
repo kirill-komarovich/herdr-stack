@@ -124,10 +124,16 @@ impl Drop for Stage {
 }
 
 /// A prompt, an echo of whatever is typed at it, and something to say when interrupted: everything an
-/// interactive program raised mid-request does, without needing one.
-const PROMPT: &str = "trap 'printf \"interrupted\\n\"' INT\n\
+/// interactive program raised mid-request does, without needing one. An interrupt fails the `read` it
+/// lands in as end of input does, so the trap marks it and the loop carries on as a REPL would.
+const PROMPT: &str = "trap 'interrupted=1; printf \"interrupted\\n\"' INT\n\
                       printf 'ready> '\n\
-                      while IFS= read -r line; do\n\
+                      while :; do\n\
+                        interrupted=\n\
+                        if ! IFS= read -r line; then\n\
+                          [ -n \"$interrupted\" ] && continue\n\
+                          break\n\
+                        fi\n\
                         printf '\\nyou said %s\\nready> ' \"$line\"\n\
                       done\n";
 
@@ -245,19 +251,28 @@ fn the_panes_size_is_the_units_size_and_a_unit_nobody_attached_to_still_has_one(
 /// already written, which is what a prompt redrawing itself does.
 #[test]
 fn cursor_movement_renders_in_the_pane_while_the_log_keeps_its_readable_copy() {
+    // An attached pane sees output from the moment it attaches and none from before, so the unit draws
+    // nothing until the pane has sent it a key, and says in its log when it is ready for one.
     let stage = Stage::new(
         "redraw",
-        "printf 'one\\ntwo\\nthree\\n'\n         sleep 1\n         printf '\\033[2A\\033[K\\033[32mredrawn\\033[0m\\n'\n         while :; do sleep 0.2; done\n",
+        "stty -echo\n         echo waiting\n         IFS= read -r go\n         printf 'one\\ntwo\\nthree\\n'\n         sleep 1\n         printf '\\033[2A\\033[K\\033[32mredrawn\\033[0m\\n'\n         while :; do sleep 0.2; done\n",
     );
     stage.start("probe");
+    assert!(until(|| log_of(&stage, "probe").contains("waiting")));
     let mut pane = stage.attach("probe", 80);
+    pane.wait_for("attached");
+    pane.press("\n");
 
     let screen = pane.wait_for("redrawn");
     let lines: Vec<&str> = screen.lines().map(str::trim_end).collect();
-    // The header the pane draws, then the three lines, with the middle one written over in place.
-    assert_eq!(&lines[1..4], ["one", "redrawn", "three"], "{lines:?}");
+    // The three lines, with the middle one written over in place.
+    let at = lines
+        .iter()
+        .position(|line| *line == "one")
+        .expect("the first line");
+    assert_eq!(&lines[at..at + 3], ["one", "redrawn", "three"], "{lines:?}");
 
-    // The log has the same output as the plain text it always was: four lines, no colour, in order.
+    // The log has the same output as the plain text it always was: every line, no colour, in order.
     assert!(
         until(|| log_of(&stage, "probe").contains("redrawn")),
         "{:?}",
@@ -270,7 +285,7 @@ fn cursor_movement_renders_in_the_pane_while_the_log_keeps_its_readable_copy() {
     );
     assert_eq!(
         log.lines().collect::<Vec<_>>(),
-        ["one", "two", "three", "redrawn"]
+        ["waiting", "one", "two", "three", "redrawn"]
     );
 }
 

@@ -146,7 +146,9 @@ fn status_of(link: &mut Link, project: &Project, name: &str) -> Status {
 
 /// What `ps` says a process's controlling terminal is: a name for one that has it, `??` for one that
 /// does not.
-fn controlling_terminal(pid: u32) -> String {
+/// `ps` names a process's terminal (`ttys003` on macOS, `pts/2` on Linux) and says `??` or `?` of a
+/// process that has none.
+fn controlling_terminal(pid: u32) -> Option<String> {
     let output = Command::new("/bin/ps")
         .arg("-p")
         .arg(pid.to_string())
@@ -154,7 +156,8 @@ fn controlling_terminal(pid: u32) -> String {
         .arg("tty=")
         .output()
         .expect("ps runs");
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+    let tty = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!tty.trim_matches('?').is_empty()).then_some(tty)
 }
 
 #[test]
@@ -195,12 +198,11 @@ fn a_tty_unit_runs_on_a_terminal_of_its_own_and_a_plain_one_still_does_not() {
     let plain = log_of(&state, &project, "plain");
     assert!(plain.contains("on-a-pipe"), "{plain:?}");
 
-    // `ps` names the terminal of a process that has one and says `??` of a process that has not.
     let terminal = controlling_terminal(pid_of(&state, &project, "interactive"));
-    assert!(terminal.starts_with("ttys"), "{terminal:?}");
+    assert!(terminal.is_some(), "{terminal:?}");
     assert_eq!(
         controlling_terminal(pid_of(&state, &project, "plain")),
-        "??"
+        None
     );
 
     for name in ["interactive", "plain"] {
@@ -310,7 +312,7 @@ fn a_tty_unit_leads_its_own_session_and_a_stop_still_takes_its_whole_group() {
     );
     let second = pid_of(&state, &project, "wrapper");
     assert_ne!(second, leader);
-    assert!(controlling_terminal(second).starts_with("ttys"));
+    assert!(controlling_terminal(second).is_some());
     assert_eq!(link.stop(&project, &unit), Ok(None));
 }
 
