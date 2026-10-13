@@ -3,6 +3,7 @@ name = "herdr-stack"
 version = "0.0.1"
 edition = "2024"
 publish = false
+license = "MIT"
 
 [dependencies]
 crossterm = "0.29.0"
