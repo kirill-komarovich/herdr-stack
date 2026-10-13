@@ -21,11 +21,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::herdr::expand_tilde;
+use crate::installed;
 use crate::terminal::{self, Terminal};
 
-/// Spelled out for the same reason the state root is: a popup inherits no `PATH` worth trusting. First
-/// found wins, so a user-local install beats the system's as it would on a login shell's `PATH`.
+/// Most likely first: see `crate::installed`.
 const MISE: [&str; 4] = [
     "~/.local/bin/mise",
     "/opt/homebrew/bin/mise",
@@ -82,25 +81,18 @@ impl Loaders {
     /// Looked up at every spawn, so installing one takes effect on the next restart.
     pub fn installed() -> Loaders {
         Loaders {
-            mise: first_present(MISE),
-            direnv: first_present(DIRENV),
+            mise: installed::first(&MISE),
+            direnv: installed::first(&DIRENV),
         }
     }
 }
 
-fn first_present<const N: usize>(candidates: [&str; N]) -> Option<PathBuf> {
-    candidates
-        .into_iter()
-        .map(expand_tilde)
-        .find(|path| path.is_file())
-}
-
 pub fn mise_path() -> Option<PathBuf> {
-    first_present(MISE)
+    installed::first(&MISE)
 }
 
 pub fn direnv_path() -> Option<PathBuf> {
-    first_present(DIRENV)
+    installed::first(&DIRENV)
 }
 
 /// Everything about the spawn except the fork, so the recipe can be read off a `Command`. Env layers
@@ -394,24 +386,6 @@ mod tests {
         let command = command(&spec(), &Loaders::default(), []);
         assert_eq!(argv_of(&command), ["bin/vite", "dev"]);
         assert_eq!(command.get_current_dir(), Some(Path::new("/repos/storefront")));
-    }
-
-    #[test]
-    fn the_first_install_found_is_the_one_used() {
-        let dir = std::env::temp_dir().join(format!("herdr-stack-loaders-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("dir");
-        let second = dir.join("second");
-        let third = dir.join("third");
-        std::fs::write(&second, "").expect("second");
-        std::fs::write(&third, "").expect("third");
-        let candidates = [
-            dir.join("first").to_string_lossy().into_owned(),
-            second.to_string_lossy().into_owned(),
-            third.to_string_lossy().into_owned(),
-        ];
-        let found = first_present(candidates.each_ref().map(String::as_str));
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(found, Some(second));
     }
 
     #[test]

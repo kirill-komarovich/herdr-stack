@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use herdr_stack::client::{Endpoint, Link, Target};
-use herdr_stack::docker::DOCKER;
+use herdr_stack::docker;
 use herdr_stack::manifest::Project;
 use herdr_stack::store::{Cache, Identity, Store};
 use herdr_stack::unit::{self, State, Status};
@@ -70,7 +70,7 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         if let Some(root) = self.composed.take() {
-            let _ = Command::new(DOCKER)
+            let _ = Command::new(docker::path())
                 .arg("compose")
                 .args(["down", "--remove-orphans", "-v"])
                 .current_dir(&root)
@@ -283,7 +283,7 @@ fn every_row_of_the_state_mapping_reads_the_way_docker_actually_reports_it() {
     let project = scratch.project(MANIFEST);
     scratch.compose(&project, SERVICES);
     assert!(
-        Command::new(DOCKER)
+        Command::new(docker::path())
             .args(["image", "inspect", "alpine:latest"])
             .output()
             .is_ok_and(|output| output.status.success()),

@@ -10,19 +10,30 @@
 //! `Health` and `ExitCode` are the fields read. The prose `Status` is never parsed.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::installed;
 use crate::store::{Cache, Identity, Store};
 use crate::supervisor::Verdict;
 use crate::unit::{self, Exit, State, Status};
 
-/// Spelled out for the same reason mise's path is: a popup inherits no `PATH` worth trusting, and
-/// this is the symlink Docker Desktop installs.
-pub const DOCKER: &str = "/usr/local/bin/docker";
+/// Docker Desktop's symlink on macOS, Homebrew's, then where Linux packages and Docker Desktop's
+/// user-local install put it. See `crate::installed` for why not `PATH`.
+const INSTALLS: [&str; 4] = [
+    "/usr/local/bin/docker",
+    "/opt/homebrew/bin/docker",
+    "/usr/bin/docker",
+    "~/.docker/bin/docker",
+];
+
+/// Where none is installed, the first place it would be, so the spawn fails naming it.
+pub fn path() -> PathBuf {
+    installed::first(&INSTALLS).unwrap_or_else(|| PathBuf::from(INSTALLS[0]))
+}
 
 /// How long `--wait` may hold a start. Measured: a service whose healthcheck is still inside its
 /// `start_period` held `up -d --wait` for 2m05s, which would wedge the daemon and outlast the
@@ -134,7 +145,7 @@ pub fn parse(text: &str) -> Vec<Container> {
 /// Default file discovery only. Never `-f`, because the repos hold compose files
 /// — `-services.yml`, `-ci.yml`, `.jmeter.yml` — that are no part of the dev flow.
 fn compose(root: &Path) -> Command {
-    let mut command = Command::new(DOCKER);
+    let mut command = Command::new(path());
     command
         .arg("compose")
         .current_dir(root)
@@ -187,7 +198,7 @@ pub fn logs_command(root: &Path, service: &str) -> Command {
 }
 
 pub fn inspect_command(names: &[&str]) -> Command {
-    let mut command = Command::new(DOCKER);
+    let mut command = Command::new(path());
     command
         .args(["inspect", "--format", "{{.Name}} {{.State.StartedAt}}"])
         .args(names)
@@ -354,7 +365,7 @@ fn cached(container: Option<Container>, uptime: Option<Duration>) -> Cache {
 pub fn ps(root: &Path) -> Result<Vec<Container>, String> {
     let output = ps_command(root)
         .output()
-        .map_err(|error| format!("{DOCKER}: {error}"))?;
+        .map_err(|error| format!("{}: {error}", path().display()))?;
     if !output.status.success() {
         return Err(complaint(&output).unwrap_or_else(|| "docker is not answering".to_string()));
     }
@@ -421,7 +432,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 fn run(mut command: Command, service: &str) -> Result<Verdict, String> {
     let output = command
         .output()
-        .map_err(|error| format!("{DOCKER}: {error}"))?;
+        .map_err(|error| format!("{}: {error}", path().display()))?;
     // `--wait`'s exit code is never the source of truth — an already-unhealthy service that is
     // plainly running exits 1 — so a refusal is a note on the row, and `compose ps` decides the state.
     if output.status.success() {
@@ -709,7 +720,7 @@ mod tests {
             logs_command(root, &service.name),
         ] {
             assert_eq!(command.get_current_dir(), Some(root));
-            assert_eq!(command.get_program(), DOCKER);
+            assert_eq!(command.get_program(), path());
             let argv = argv(&command);
             assert!(
                 !argv.iter().any(|arg| arg == "-f" || arg == "--file"),

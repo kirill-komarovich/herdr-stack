@@ -225,7 +225,7 @@ impl Stream {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| format!("{}: {error}", crate::docker::DOCKER))?;
+            .map_err(|error| format!("{}: {error}", crate::docker::path().display()))?;
         let (sender, chunks) = channel();
         if let Some(out) = child.stdout.take() {
             drain(out, sender.clone());

@@ -8,6 +8,7 @@ pub mod env;
 pub mod errand;
 pub mod form;
 pub mod herdr;
+pub mod installed;
 pub mod local;
 pub mod manifest;
 pub mod mode;

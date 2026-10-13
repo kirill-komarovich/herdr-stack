@@ -11,7 +11,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use herdr_stack::client::{Endpoint, Link, Target};
-use herdr_stack::docker::DOCKER;
+use herdr_stack::docker;
 use herdr_stack::local;
 use herdr_stack::manifest::Project;
 use herdr_stack::peek::Source;
@@ -98,7 +98,7 @@ impl Stage {
         )
         .expect("a compose file");
         self.composed = true;
-        let up = Command::new(DOCKER)
+        let up = Command::new(docker::path())
             .args(["compose", "up", "-d", service])
             .current_dir(&self.project.root)
             .output()
@@ -122,7 +122,7 @@ impl Drop for Stage {
     fn drop(&mut self) {
         self.pty.close();
         if self.composed {
-            let _ = Command::new(DOCKER)
+            let _ = Command::new(docker::path())
                 .args(["compose", "down", "-v", "--remove-orphans"])
                 .current_dir(&self.project.root)
                 .output();
@@ -271,13 +271,13 @@ impl Composed {
         .expect("a compose file");
         let composed = Composed(dir);
         assert!(
-            Command::new(DOCKER)
+            Command::new(docker::path())
                 .args(["image", "inspect", "alpine:latest"])
                 .output()
                 .is_ok_and(|output| output.status.success()),
             "alpine:latest must already be in the local image store; nothing here pulls"
         );
-        let up = Command::new(DOCKER)
+        let up = Command::new(docker::path())
             .args(["compose", "up", "-d", service])
             .current_dir(&composed.0)
             .output()
@@ -289,7 +289,7 @@ impl Composed {
 
 impl Drop for Composed {
     fn drop(&mut self) {
-        let _ = Command::new(DOCKER)
+        let _ = Command::new(docker::path())
             .args(["compose", "down", "-v", "--remove-orphans"])
             .current_dir(&self.0)
             .output();
