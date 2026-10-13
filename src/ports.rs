@@ -1,28 +1,29 @@
 //! Which ports a local unit is listening on, observed rather than declared.
 //!
 //! A manifest never carries a port — every unit starts in the user's shell with its prompt hooks run,
-//! so the numbers live in whatever those hooks read and change without anyone editing a manifest. The only honest answer is
-//! therefore the one the kernel gives: what is bound right now.
+//! so the numbers live in whatever those hooks read and change without anyone editing a manifest. The
+//! only honest answer is therefore the one the kernel gives: what is bound right now.
 //!
-//! The join is by **process group**. A unit is `setsid(2)`'d at spawn, so its pid is its group's, and
-//! whatever it forks — a `bin/vite dev` wrapper's node, a `rails` cluster's workers — is in that group
-//! and is what actually holds the socket.
+//! The join is by **session**. A unit is `setsid(2)`'d at spawn, so its pid is its session's, and
+//! whatever it forks — a `bin/vite dev` wrapper's node, a `rails` cluster's workers — stays in that
+//! session even when, as pnpm does with vite, it is given a process group of its own.
 //!
-//! Two commands for the whole machine rather than two per unit: `lsof` is ~90 ms here and a stack is a
-//! dozen units, so anything per-unit would be seconds.
+//! One `lsof` for the whole machine rather than one per unit: it is ~90 ms here and a stack is a dozen
+//! units, so anything per-unit would be seconds.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
 
-/// Listening ports keyed by the process group holding them.
+use crate::local;
+
+/// Listening ports keyed by the session holding them.
 pub type Listeners = BTreeMap<u32, BTreeSet<u16>>;
 
 /// `Err` is "the machine could not be asked", which a caller reports rather than renders as a unit
 /// listening on nothing.
 pub fn listening() -> Result<Listeners, String> {
     let sockets = run(lsof_command(), "lsof")?;
-    let table = run(ps_command(), "ps")?;
-    Ok(fold(&parse_lsof(&sockets), &parse_groups(&table)))
+    Ok(fold(&parse_lsof(&sockets), local::session_of))
 }
 
 fn lsof_command() -> Command {
@@ -31,14 +32,6 @@ fn lsof_command() -> Command {
     // which are slow and neither of which is wanted; `-F pn` is the machine-readable form.
     command
         .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pn"])
-        .stdin(Stdio::null());
-    command
-}
-
-fn ps_command() -> Command {
-    let mut command = Command::new("/bin/ps");
-    command
-        .args(["-ax", "-o", "pid=,pgid="])
         .stdin(Stdio::null());
     command
 }
@@ -77,26 +70,18 @@ fn port_of(address: &str) -> Option<u16> {
     address.rsplit_once(':')?.1.parse().ok()
 }
 
-fn parse_groups(text: &str) -> BTreeMap<u32, u32> {
-    text.lines()
-        .filter_map(|line| {
-            let mut columns = line.split_whitespace();
-            let pid = columns.next()?.parse().ok()?;
-            let group = columns.next()?.parse().ok()?;
-            Some((pid, group))
-        })
-        .collect()
-}
-
-/// A listener whose pid the process table no longer knows is dropped: it exited between the two
-/// commands, and guessing its group would be inventing one.
-fn fold(listeners: &BTreeMap<u32, BTreeSet<u16>>, groups: &BTreeMap<u32, u32>) -> Listeners {
+/// A listener whose session can no longer be asked is dropped: it exited after `lsof` saw it, and
+/// guessing whose it was would be inventing an owner.
+fn fold(
+    listeners: &BTreeMap<u32, BTreeSet<u16>>,
+    session_of: impl Fn(u32) -> Option<u32>,
+) -> Listeners {
     let mut folded: Listeners = BTreeMap::new();
     for (pid, ports) in listeners {
-        let Some(group) = groups.get(pid) else {
+        let Some(session) = session_of(*pid) else {
             continue;
         };
-        folded.entry(*group).or_default().extend(ports);
+        folded.entry(session).or_default().extend(ports);
     }
     folded
 }
@@ -127,26 +112,19 @@ mod tests {
     }
 
     #[test]
-    fn ports_land_under_the_group_leader_rather_than_the_pid_that_forked_last() {
-        let listeners = BTreeMap::from([(920, BTreeSet::from([3000]))]);
-        let groups = BTreeMap::from([(900, 900), (920, 900)]);
+    fn ports_land_under_the_session_whatever_group_holds_them() {
+        let listeners =
+            BTreeMap::from([(920, BTreeSet::from([3000])), (930, BTreeSet::from([5173]))]);
+        let sessions = |pid| matches!(pid, 920 | 930).then_some(900);
         assert_eq!(
-            fold(&listeners, &groups),
-            Listeners::from([(900, BTreeSet::from([3000]))])
+            fold(&listeners, sessions),
+            Listeners::from([(900, BTreeSet::from([3000, 5173]))])
         );
     }
 
     #[test]
-    fn a_listener_the_process_table_has_lost_is_dropped_rather_than_grouped_by_guess() {
+    fn a_listener_whose_session_cannot_be_asked_is_dropped_rather_than_guessed_at() {
         let listeners = BTreeMap::from([(920, BTreeSet::from([3000]))]);
-        assert!(fold(&listeners, &BTreeMap::new()).is_empty());
-    }
-
-    #[test]
-    fn the_process_table_is_read_as_two_columns() {
-        assert_eq!(
-            parse_groups("  920   900\n 1 1\nnonsense\n"),
-            BTreeMap::from([(920, 900), (1, 1)])
-        );
+        assert!(fold(&listeners, |_| None).is_empty());
     }
 }

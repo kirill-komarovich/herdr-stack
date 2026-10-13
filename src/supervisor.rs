@@ -270,9 +270,9 @@ impl Supervisor {
                 }
                 let Some(pid) = record.pid else { continue };
                 if local::still_running(pid, record.ps_start.as_deref()) {
-                    let _ = local::term_group(pid);
+                    let _ = local::term_session(pid);
                     if !settled(pid, self.grace) {
-                        let _ = local::kill_group(pid);
+                        let _ = local::kill_session(pid);
                         settled(pid, REAP_WAIT);
                     }
                     killed.push(format!("{}/{unit}", slot.key()));
@@ -339,12 +339,12 @@ impl Supervisor {
                 .collect()
         };
         for (_, pid) in &running {
-            let _ = local::term_group(*pid);
+            let _ = local::term_session(*pid);
         }
         if !self.all_quiet(&running, self.grace) {
             for (handle, pid) in &running {
                 if !self.is_quiet(handle, *pid) {
-                    let _ = local::kill_group(*pid);
+                    let _ = local::kill_session(*pid);
                 }
             }
             self.all_quiet(&running, REAP_WAIT);
@@ -400,11 +400,11 @@ impl Supervisor {
         let Some(pid) = self.mark_stopping(handle) else {
             return Halt::NotRunning;
         };
-        let _ = local::term_group(pid);
+        let _ = local::term_session(pid);
         if self.quiet(handle, pid, self.grace) {
             return Halt::Stopped;
         }
-        let _ = local::kill_group(pid);
+        let _ = local::kill_session(pid);
         self.quiet(handle, pid, REAP_WAIT);
         Halt::Escalated
     }
@@ -417,7 +417,7 @@ impl Supervisor {
     }
 
     /// Stopped means two things and needs both: the wrapper reaped — the live entry only goes away
-    /// once `wait()` has returned — and nothing left in its process group. A wrapper that dies on
+    /// once `wait()` has returned — and nothing left in its session. A wrapper that dies on
     /// `SIGTERM` while its children ignore it would otherwise pass for a clean stop.
     fn quiet(&self, handle: &Handle, pid: u32, patience: Duration) -> bool {
         let deadline = std::time::Instant::now() + patience;
@@ -433,7 +433,7 @@ impl Supervisor {
     }
 
     fn is_quiet(&self, handle: &Handle, pid: u32) -> bool {
-        !self.holds(handle) && local::group_empty(pid)
+        !self.holds(handle) && local::session_empty(pid)
     }
 
     /// The record goes down before the live entry goes away, so a caller that waited for the entry to
@@ -534,7 +534,7 @@ fn changed_since(cwd: &Path, started_at: SystemTime) -> Option<String> {
 /// the only evidence available.
 fn settled(pid: u32, patience: Duration) -> bool {
     let deadline = std::time::Instant::now() + patience;
-    while !local::group_empty(pid) {
+    while !local::session_empty(pid) {
         if std::time::Instant::now() >= deadline {
             return false;
         }

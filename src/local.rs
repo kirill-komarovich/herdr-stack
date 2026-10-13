@@ -1,4 +1,4 @@
-//! The spawn recipe and the group signals, and nothing about who called for them.
+//! The spawn recipe and the session signals, and nothing about who called for them.
 //!
 //! Three parts of the spawn are load-bearing and none of them is optional: the user's own shell with
 //! cwd set, running its prompt hooks before it becomes the unit (`crate::shell`), so the toolchain and
@@ -115,7 +115,7 @@ pub fn spawn(spec: &Spec, shell: &Shell, log: File, log_path: &Path) -> std::io:
     })
 }
 
-/// `setsid(2)` leaves the child leading a new session *and* a new process group, which is what a group
+/// `setsid(2)` leaves the child leading a new session *and* a new process group, which is what a session
 /// signal later needs. `Command::process_group(0)` would make it a group leader first and then
 /// `setsid` returns EPERM — measured — so the two cannot be combined.
 ///
@@ -132,21 +132,32 @@ fn on_pipes(command: &mut Command) {
     }
 }
 
-pub fn term_group(pid: u32) -> std::io::Result<()> {
-    signal_group(pid, libc::SIGTERM)
+pub fn term_session(sid: u32) -> std::io::Result<()> {
+    signal_session(sid, libc::SIGTERM)
 }
 
-pub fn kill_group(pid: u32) -> std::io::Result<()> {
-    signal_group(pid, libc::SIGKILL)
+pub fn kill_session(sid: u32) -> std::io::Result<()> {
+    signal_session(sid, libc::SIGKILL)
 }
 
-/// Measured: `TERM` to a `bin/vite dev` wrapper killed the wrapper and left both its children
-/// running, orphaned.
-fn signal_group(pid: u32, signal: i32) -> std::io::Result<()> {
-    match unsafe { libc::killpg(pid as i32, signal) } {
-        -1 => Err(std::io::Error::last_os_error()),
-        _ => Ok(()),
+/// A unit is everything in the session `setsid(2)` gave it, not its process group: pnpm starts vite in
+/// a group of its own, which a signal to the unit's group never reaches. Measured as well: `TERM` to a
+/// `bin/vite dev` wrapper alone killed the wrapper and left both its children running, orphaned.
+///
+/// Every group in the session is signalled whole, which also reaches a child forked since the table
+/// was read; a group never spans two sessions, so none of them is anyone else's.
+fn signal_session(sid: u32, signal: i32) -> std::io::Result<()> {
+    let mut groups: Vec<u32> = session_members(sid)?
+        .iter()
+        .map(|member| member.group)
+        .collect();
+    groups.push(sid);
+    groups.sort_unstable();
+    groups.dedup();
+    for group in groups {
+        unsafe { libc::killpg(group as i32, signal) };
     }
+    Ok(())
 }
 
 pub fn alive(pid: u32) -> bool {
@@ -165,46 +176,63 @@ pub fn still_running(pid: u32, ps_start: Option<&str>) -> bool {
         return false;
     }
     match (ps_start, ps_field(pid, "lstart")) {
-        (Some(recorded), Some(current)) => recorded == current && leads_its_group(pid),
+        (Some(recorded), Some(current)) => recorded == current && session_of(pid) == Some(pid),
         // Without a recorded start time a pid says nothing, and killing a group on a guess is worse
         // than leaving a unit behind.
         _ => false,
     }
 }
 
-/// A unit is spawned with `setsid(2)`, so anything whose group is not its own pid is not one of ours
-/// and its group must not be signalled.
-fn leads_its_group(pid: u32) -> bool {
-    ps_field(pid, "pgid")
-        .and_then(|group| group.parse::<u32>().ok())
-        .is_some_and(|group| group == pid)
+/// The session a process is in. A unit is spawned with `setsid(2)`, so anything that does not lead its
+/// own session is not one of ours and must not be signalled as one.
+pub fn session_of(pid: u32) -> Option<u32> {
+    match unsafe { libc::getsid(pid as i32) } {
+        -1 => None,
+        sid => Some(sid as u32),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Member {
+    pid: u32,
+    group: u32,
 }
 
 /// Stopping is not done when the wrapper is reaped — it is done when the tree it forked is gone, which
-/// is the whole hazard the group signal exists for. macOS documents its own `ps -g` as ignored, so the
-/// whole table is the only way to ask.
-pub fn group_empty(pgid: u32) -> bool {
-    let Ok(output) = Command::new("/bin/ps")
+/// is the whole hazard the session signal exists for. Neither `ps` lists a session's members (macOS's
+/// `sess` column reads 0), so the table is read whole and each pid's session asked of the kernel.
+pub fn session_empty(sid: u32) -> bool {
+    // Unanswerable is not the same as empty: escalating on a failed `ps` is the safer half.
+    session_members(sid).is_ok_and(|members| members.is_empty())
+}
+
+fn session_members(sid: u32) -> std::io::Result<Vec<Member>> {
+    let output = Command::new("/bin/ps")
         .arg("-ax")
         .arg("-o")
         .arg("pid=,pgid=,stat=")
-        .output()
-    else {
-        // Unanswerable is not the same as empty: escalating on a failed `ps` is the safer half.
-        return false;
-    };
-    !holds_a_live_member(&String::from_utf8_lossy(&output.stdout), pgid)
+        .output()?;
+    Ok(live_members(
+        &String::from_utf8_lossy(&output.stdout),
+        sid,
+        session_of,
+    ))
 }
 
 /// A zombie is not counted: it runs nothing and no signal reaches it, and where nothing reaps orphans
 /// — a container whose init is not one — it would hold every stop to the full grace and escalation.
-fn holds_a_live_member(table: &str, pgid: u32) -> bool {
-    table.lines().any(|line| {
-        let mut columns = line.split_whitespace();
-        let (_, group, stat) = (columns.next(), columns.next(), columns.next());
-        group.and_then(|group| group.parse::<u32>().ok()) == Some(pgid)
-            && !stat.is_some_and(|stat| stat.starts_with('Z'))
-    })
+fn live_members(table: &str, sid: u32, session_of: impl Fn(u32) -> Option<u32>) -> Vec<Member> {
+    table
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split_whitespace();
+            let pid = columns.next()?.parse().ok()?;
+            let group = columns.next()?.parse().ok()?;
+            let stat = columns.next().unwrap_or_default();
+            (!stat.starts_with('Z')).then_some(Member { pid, group })
+        })
+        .filter(|member| session_of(member.pid) == Some(sid))
+        .collect()
 }
 
 fn ps_field(pid: u32, field: &str) -> Option<String> {
@@ -365,21 +393,34 @@ mod tests {
     }
 
     #[test]
-    fn a_group_left_with_only_zombies_is_empty() {
-        let table = "  101   100 S\n  102   100 Z\n  103   200 Z+\n";
-        assert!(holds_a_live_member(table, 100));
-        assert!(!holds_a_live_member(table, 200));
-        assert!(!holds_a_live_member(table, 300));
+    fn a_session_counts_its_members_in_any_group_and_no_zombie() {
+        let table = "  101   100 S\n  102   102 S+\n  103   100 Z\n  104   200 S\n";
+        let sessions = |pid| match pid {
+            101..=103 => Some(100),
+            _ => Some(200),
+        };
+        assert_eq!(
+            live_members(table, 100, sessions),
+            [
+                Member {
+                    pid: 101,
+                    group: 100
+                },
+                Member {
+                    pid: 102,
+                    group: 102
+                }
+            ]
+        );
+        assert!(live_members(table, 300, sessions).is_empty());
     }
 
     #[test]
-    fn a_group_with_a_member_is_not_empty_and_one_that_never_existed_is() {
-        let group = ps_field(std::process::id(), "pgid")
-            .and_then(|group| group.parse::<u32>().ok())
-            .expect("this process has a group");
-        assert!(!group_empty(group));
-        // No group can be numbered near the top of a u32: pids are bounded far below it.
-        assert!(group_empty(u32::MAX - 1));
+    fn a_session_with_a_member_is_not_empty_and_one_that_never_existed_is() {
+        let session = session_of(std::process::id()).expect("this process has a session");
+        assert!(!session_empty(session));
+        // No session can be numbered near the top of a u32: pids are bounded far below it.
+        assert!(session_empty(u32::MAX - 1));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Every unit here is a `sleep` or a shell loop of this file's own making, in a throwaway project
 //! under the temporary directory, under a state root of its own — never the spelled-out one, whose
 //! records name processes this test did not spawn. The only pids signalled directly are ones it
-//! started itself, and every test leaves its own process group empty.
+//! started itself, and every test leaves its own session empty.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -260,7 +260,7 @@ fn a_started_unit_runs_in_its_own_session_with_its_output_in_the_log() {
 
     assert_eq!(link.stop(&project, &unit_of(&project, "probe")), Ok(None));
     assert!(
-        local::group_empty(pid),
+        local::session_empty(pid),
         "the unit's group outlived its stop"
     );
 }
@@ -302,8 +302,66 @@ fn a_unit_that_dies_at_once_keeps_the_code_it_exited_with_through_being_stopped(
     );
 }
 
+const NEW_GROUP: &str = "HERDR_STACK_TEST_NEW_GROUP";
+
+/// Not a test of its own: a unit's child that moves into a process group of its own, as pnpm does with
+/// vite, by re-running this binary filtered down to this function. Run any other way, it returns at
+/// once.
 #[test]
-fn a_term_to_the_leader_orphans_the_children_that_a_group_stop_takes_with_it() {
+fn leave_the_group_when_run_as_a_child() {
+    if std::env::var_os(NEW_GROUP).is_none() {
+        return;
+    }
+    unsafe { libc::setpgid(0, 0) };
+    std::thread::sleep(Duration::from_secs(600));
+}
+
+#[test]
+fn a_stop_reaches_a_child_that_moved_to_a_process_group_of_its_own() {
+    let scratch = Scratch::new("regrouped");
+    let exe = std::env::current_exe().expect("this test binary");
+    let wrapper = format!(
+        "{} leave_the_group_when_run_as_a_child --exact & echo child $!; wait",
+        exe.display()
+    );
+    let project = scratch.project(
+        "storefront",
+        &format!(
+            "[local.wrapper]\ncmd = {}\nenv = {{ {NEW_GROUP} = \"1\" }}\n",
+            serde_json::json!(["sh", "-c", wrapper])
+        ),
+    );
+    let state = scratch.state();
+    let daemon = Daemon::serving(&state);
+    let mut link = daemon.link();
+    let unit = unit_of(&project, "wrapper");
+
+    link.start(&project, &unit).expect("start");
+    assert!(
+        until(PATIENCE, || children(&log_of(&state, &project, "wrapper"))
+            .len()
+            == 1),
+        "the wrapper never reported its child"
+    );
+    let child = children(&log_of(&state, &project, "wrapper"))[0];
+    let leader = pid_of(&state, &project, "wrapper");
+    assert!(
+        until(PATIENCE, || unsafe { libc::getpgid(child as i32) }
+            == child as i32),
+        "the child never left the unit's group"
+    );
+    assert_eq!(local::session_of(child), Some(leader));
+
+    assert_eq!(link.stop(&project, &unit), Ok(None));
+    assert!(
+        !local::alive(child),
+        "the stop left the regrouped child running"
+    );
+    assert!(local::session_empty(leader));
+}
+
+#[test]
+fn a_term_to_the_leader_orphans_the_children_that_a_session_stop_takes_with_it() {
     let scratch = Scratch::new("group");
     let wrapper = "sleep 30 & echo child $!; sleep 30 & echo child $!; wait";
     let project = scratch.project(
@@ -335,9 +393,9 @@ fn a_term_to_the_leader_orphans_the_children_that_a_group_stop_takes_with_it() {
         orphans.iter().all(|pid| local::alive(*pid)),
         "the children were expected to be left orphaned: {orphans:?}"
     );
-    // Cleaning up the orphans is what the group signal does; here it is done by hand.
-    local::kill_group(leader).expect("the group is still ours to signal");
-    assert!(until(PATIENCE, || local::group_empty(leader)));
+    // Cleaning up the orphans is what the session signal does; here it is done by hand.
+    local::kill_session(leader).expect("the session is still ours to signal");
+    assert!(until(PATIENCE, || local::session_empty(leader)));
 
     // Second generation: the same tree, stopped through the daemon.
     link.start(&project, &unit).expect("restart");
@@ -352,9 +410,9 @@ fn a_term_to_the_leader_orphans_the_children_that_a_group_stop_takes_with_it() {
     assert_eq!(link.stop(&project, &unit), Ok(None));
     assert!(
         tree.iter().all(|pid| !local::alive(*pid)),
-        "the group stop left children behind: {tree:?}"
+        "the session stop left children behind: {tree:?}"
     );
-    assert!(local::group_empty(leader));
+    assert!(local::session_empty(leader));
 }
 
 #[test]
@@ -385,7 +443,10 @@ fn a_unit_that_ignores_sigterm_is_killed_after_the_five_second_grace() {
     assert!(took >= GRACE, "the grace was cut short at {took:?}");
     assert!(took < GRACE + Duration::from_secs(5), "{took:?}");
     assert!(note.contains("killed"), "{note}");
-    assert!(local::group_empty(leader), "the group survived the SIGKILL");
+    assert!(
+        local::session_empty(leader),
+        "the group survived the SIGKILL"
+    );
     assert_eq!(
         status_of(&mut link, &project, "stubborn").state,
         State::Down
@@ -413,7 +474,7 @@ fn killing_the_daemon_takes_every_unit_with_it_and_leaves_no_pid_in_the_records(
     daemon.signal(libc::SIGTERM);
     assert!(daemon.gone(), "the daemon ignored its own SIGTERM");
     assert!(
-        local::group_empty(leader),
+        local::session_empty(leader),
         "a unit outlived the daemon that was its parent"
     );
     assert_eq!(
@@ -457,7 +518,7 @@ fn a_daemon_started_after_a_sigkilled_predecessor_kills_the_leftovers_and_puts_t
     let successor = Daemon::serving(&state);
     let mut link = successor.link();
     assert!(
-        until(PATIENCE, || local::group_empty(leader)),
+        until(PATIENCE, || local::session_empty(leader)),
         "the successor left its predecessor's unit running"
     );
     // Killed and then started again, never reclaimed: what is running is the successor's own child,
@@ -510,7 +571,7 @@ fn a_replaced_daemon_puts_back_what_it_was_running_and_leaves_what_was_stopped_a
         first
     };
     assert!(
-        local::group_empty(first),
+        local::session_empty(first),
         "the stack outlived the daemon that owned it"
     );
 
@@ -556,7 +617,7 @@ fn two_projects_that_name_a_unit_alike_each_run_their_own_with_its_own_log() {
 
     // Stopping one leaves the other alone: the name they share is not a thing they share.
     assert_eq!(link.stop(&one, &unit_of(&one, "rails")), Ok(None));
-    assert!(local::group_empty(leaders[0]));
+    assert!(local::session_empty(leaders[0]));
     assert!(local::alive(leaders[1]));
     assert_eq!(status_of(&mut link, &two, "rails").state, State::Up);
     assert_eq!(status_of(&mut link, &one, "rails").state, State::Down);
@@ -586,7 +647,7 @@ fn a_unit_this_project_already_runs_is_refused_by_the_pid_it_is_running_as() {
     assert_eq!(refusal, format!("sleeper is already running, pid {leader}"));
 
     assert_eq!(link.stop(&project, &unit_of(&project, "sleeper")), Ok(None));
-    assert!(local::group_empty(leader));
+    assert!(local::session_empty(leader));
 }
 
 /// The daemon's `PATH` is whatever the pane that first ran a verb had, often with another directory's
@@ -698,7 +759,7 @@ fn a_restart_spawns_into_the_same_log_truncated_with_one_generation_kept() {
     let second = pid_of(&state, &project, "chatty");
     assert_ne!(first, second);
     assert!(
-        local::group_empty(first),
+        local::session_empty(first),
         "the old generation is still running"
     );
 
@@ -721,7 +782,7 @@ fn a_restart_spawns_into_the_same_log_truncated_with_one_generation_kept() {
     );
 
     assert_eq!(link.stop(&project, &unit), Ok(None));
-    assert!(local::group_empty(second));
+    assert!(local::session_empty(second));
 }
 
 #[test]
@@ -768,7 +829,7 @@ fn a_daemon_stays_for_as_long_as_it_owns_a_unit_and_the_last_stop_is_its_shutdow
         "the last unit stopping was not the daemon's shutdown"
     );
     serving.join().expect("serve returns").expect("served");
-    assert!(local::group_empty(leader));
+    assert!(local::session_empty(leader));
 }
 
 #[test]

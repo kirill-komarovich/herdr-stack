@@ -300,9 +300,9 @@ fn a_tty_unit_leads_its_own_session_and_a_stop_still_takes_its_whole_group() {
     assert_eq!(link.stop(&project, &unit), Ok(None));
     assert!(
         tree.iter().all(|pid| !local::alive(*pid)),
-        "the group stop left children behind: {tree:?}"
+        "the session stop left children behind: {tree:?}"
     );
-    assert!(local::group_empty(leader));
+    assert!(local::session_empty(leader));
     assert_eq!(status_of(&mut link, &project, "wrapper").state, State::Down);
 
     // And a restart gives it a fresh terminal rather than the one that just went.
