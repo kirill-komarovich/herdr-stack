@@ -17,6 +17,7 @@ pub mod ports;
 pub mod project;
 pub mod readable;
 pub mod rows;
+pub mod shell;
 pub mod state;
 pub mod store;
 pub mod supervisor;

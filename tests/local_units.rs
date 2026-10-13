@@ -7,7 +7,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 use herdr_stack::client::{Endpoint, Link, Target};
@@ -41,8 +41,6 @@ fn until(patience: Duration, mut settled: impl FnMut() -> bool) -> bool {
 /// A temporary directory holding both the state root and the projects the units live in.
 struct Scratch {
     root: PathBuf,
-    trusted: Vec<PathBuf>,
-    allowed: Vec<PathBuf>,
 }
 
 impl Scratch {
@@ -50,15 +48,25 @@ impl Scratch {
         let root = std::env::temp_dir().join(format!("herdr-stack-local-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("scratch");
-        Scratch {
-            root,
-            trusted: Vec::new(),
-            allowed: Vec::new(),
-        }
+        Scratch { root }
     }
 
     fn state(&self) -> PathBuf {
         self.root.join("state")
+    }
+
+    /// A `HOME` whose Herdr config names bash as the panes' shell, holding only the rc this test wrote
+    /// for it. Not a login shell, which on macOS would read `.bash_profile` instead.
+    fn home_with_bashrc(&self, bashrc: &str) -> PathBuf {
+        let home = self.root.join("home");
+        std::fs::create_dir_all(home.join(".config/herdr")).expect("home");
+        std::fs::write(
+            home.join(".config/herdr/config.toml"),
+            "[terminal]\ndefault_shell = \"/bin/bash\"\nshell_mode = \"non_login\"\n",
+        )
+        .expect("herdr config");
+        std::fs::write(home.join(".bashrc"), bashrc).expect(".bashrc");
+        home
     }
 
     fn project(&self, name: &str, manifest: &str) -> Project {
@@ -68,51 +76,10 @@ impl Scratch {
         std::fs::write(&path, manifest).expect("manifest");
         Project::load(&path).expect("manifest parses")
     }
-
-    /// mise reads a `mise.toml` only from a directory it has been told to trust.
-    fn trust(&mut self, project: &Project, mise: &str) {
-        std::fs::write(project.root.join("mise.toml"), mise).expect("mise.toml");
-        let trusted = Command::new(local::mise_path().expect("mise is installed"))
-            .arg("trust")
-            .arg(&project.root)
-            .output()
-            .expect("mise trust runs");
-        assert!(trusted.status.success(), "{trusted:?}");
-        self.trusted.push(project.root.clone());
-    }
-
-    /// direnv loads an `.envrc` only once its current content has been allowed.
-    fn allow(&mut self, project: &Project, envrc: &str) {
-        std::fs::write(project.root.join(".envrc"), envrc).expect(".envrc");
-        let direnv = local::direnv_path().expect("direnv is installed");
-        let allowed = Command::new(direnv)
-            .arg("allow")
-            .arg(&project.root)
-            .output()
-            .expect("direnv allow runs");
-        assert!(allowed.status.success(), "{allowed:?}");
-        self.allowed.push(project.root.clone());
-    }
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        for path in &self.allowed {
-            let Some(direnv) = local::direnv_path() else {
-                break;
-            };
-            let _ = Command::new(direnv).arg("deny").arg(path).output();
-        }
-        for path in &self.trusted {
-            let Some(mise) = local::mise_path() else {
-                break;
-            };
-            let _ = Command::new(mise)
-                .arg("trust")
-                .arg("--untrust")
-                .arg(path)
-                .output();
-        }
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -125,8 +92,16 @@ struct Daemon {
 
 impl Daemon {
     fn serving(root: &Path) -> Daemon {
+        Daemon::serving_in(root, root, "/bin/sh")
+    }
+
+    /// A unit runs in the user's shell, config and all, so the daemon is told whose: `home`'s and
+    /// `shell`'s, never the developer's running the tests.
+    fn serving_in(root: &Path, home: &Path, shell: &str) -> Daemon {
         let child = Endpoint::at(root)
             .command(exe())
+            .env("HOME", home)
+            .env("SHELL", shell)
             .spawn()
             .expect("daemon spawns");
         let daemon = Daemon {
@@ -220,8 +195,8 @@ fn children(log: &str) -> Vec<u32> {
 }
 
 #[test]
-fn a_started_unit_runs_under_mise_in_its_own_session_with_its_output_in_the_log() {
-    let mut scratch = Scratch::new("spawn");
+fn a_started_unit_runs_in_its_own_session_with_its_output_in_the_log() {
+    let scratch = Scratch::new("spawn");
     let project = scratch.project(
         "storefront",
         "[env]\n\
@@ -229,12 +204,11 @@ fn a_started_unit_runs_under_mise_in_its_own_session_with_its_output_in_the_log(
          HD_UNIT = \"from-top\"\n\
          \n\
          [local.probe]\n\
-         cmd = [\"sh\", \"-c\", \"echo mise=$HD_FROM_MISE top=$HD_TOP unit=$HD_UNIT; cat; echo stdin-closed; sleep 30\"]\n\
+         cmd = [\"sh\", \"-c\", \"echo top=$HD_TOP unit=$HD_UNIT; cat; echo stdin-closed; sleep 30\"]\n\
          \n\
          [local.probe.env]\n\
          HD_UNIT = \"from-unit\"\n",
     );
-    scratch.trust(&project, "[env]\nHD_FROM_MISE = \"from-mise\"\n");
     let state = scratch.state();
     let daemon = Daemon::serving(&state);
     let mut link = daemon.link();
@@ -252,8 +226,6 @@ fn a_started_unit_runs_under_mise_in_its_own_session_with_its_output_in_the_log(
     );
 
     let log = log_of(&state, &project, "probe");
-    // mise supplied the repo's env, which is what keeps every port out of the manifest.
-    assert!(log.contains("mise=from-mise"), "{log:?}");
     assert!(log.contains("top=from-top"), "{log:?}");
     // Innermost last: the unit's own env beats the manifest's `[env]`.
     assert!(log.contains("unit=from-unit"), "{log:?}");
@@ -610,35 +582,38 @@ fn a_unit_this_project_already_runs_is_refused_by_the_pid_it_is_running_as() {
     assert!(local::group_empty(leader));
 }
 
+/// Whatever mise, direnv or anything else exports in a directory, it does so from a prompt hook, so a
+/// hook of this test's own stands in for all of them.
 #[test]
-fn a_restart_rereads_what_mise_and_direnv_say_about_the_directory() {
-    let mut scratch = Scratch::new("loaders");
+fn a_restart_reruns_the_shells_prompt_hooks_in_the_units_directory() {
+    let scratch = Scratch::new("hooks");
+    let home = scratch.home_with_bashrc("PROMPT_COMMAND='[ -f .hook-env ] && . ./.hook-env'\n");
     let project = scratch.project(
         "storefront",
         "[local.probe]\n\
-         cmd = [\"sh\", \"-c\", \"echo mise=$HD_FROM_MISE direnv=$HD_FROM_DIRENV; sleep 30\"]\n",
+         cmd = [\"sh\", \"-c\", \"echo hook=$HD_FROM_HOOK; sleep 30\"]\n",
     );
-    scratch.trust(&project, "[env]\nHD_FROM_MISE = \"first\"\n");
-    scratch.allow(&project, "export HD_FROM_DIRENV=first\n");
+    let hook_env = project.root.join(".hook-env");
+    std::fs::write(&hook_env, "export HD_FROM_HOOK=first\n").expect(".hook-env");
     let state = scratch.state();
-    let daemon = Daemon::serving(&state);
+    // `/bin/sh` has no prompt hooks: the shell that runs them is the one Herdr's config names.
+    let daemon = Daemon::serving_in(&state, &home, "/bin/sh");
     let mut link = daemon.link();
     let unit = unit_of(&project, "probe");
 
     link.start(&project, &unit).expect("start");
     assert!(
         until(PATIENCE, || log_of(&state, &project, "probe")
-            .contains("mise=first direnv=first")),
+            .contains("hook=first")),
         "{:?}",
         log_of(&state, &project, "probe")
     );
 
-    scratch.trust(&project, "[env]\nHD_FROM_MISE = \"second\"\n");
-    scratch.allow(&project, "export HD_FROM_DIRENV=second\n");
+    std::fs::write(&hook_env, "export HD_FROM_HOOK=second\n").expect(".hook-env");
     assert_eq!(link.restart(&project, &unit), Ok(None));
     assert!(
         until(PATIENCE, || log_of(&state, &project, "probe")
-            .contains("mise=second direnv=second")),
+            .contains("hook=second")),
         "{:?}",
         log_of(&state, &project, "probe")
     );

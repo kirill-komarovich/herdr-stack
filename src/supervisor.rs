@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use crate::local::{self, Spec};
+use crate::shell::Shell;
 use crate::store::{Identity, Record, Slot, Store};
 use crate::terminal::{self, Terminal};
 use crate::unit::{self, Exit, State, Status};
@@ -100,15 +101,27 @@ pub struct Supervisor {
     /// What tells a reaping thread that the unit it is burying was wanted: on the way out every unit
     /// is stopped, and only here does a stop mean something to put back.
     shutting_down: AtomicBool,
+    /// `None` is the user's own, looked up at every start so a changed shell setting reaches the next
+    /// restart. Tests pin one so a unit never runs the developer's own shell config.
+    shell: Option<Shell>,
 }
 
 impl Supervisor {
     pub fn new(root: &Path, grace: Duration) -> Arc<Supervisor> {
+        Supervisor::with(root, grace, None)
+    }
+
+    pub fn with_shell(root: &Path, grace: Duration, shell: Shell) -> Arc<Supervisor> {
+        Supervisor::with(root, grace, Some(shell))
+    }
+
+    fn with(root: &Path, grace: Duration, shell: Option<Shell>) -> Arc<Supervisor> {
         Arc::new(Supervisor {
             store: Store::at(root),
             grace,
             live: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
+            shell,
         })
     }
 
@@ -137,7 +150,11 @@ impl Supervisor {
         let log = slot
             .open_log(&handle.unit)
             .map_err(|error| format!("{}: {error}", slot.log_path(&handle.unit).display()))?;
-        let spawned = local::spawn(spec, log)
+        let shell = self
+            .shell
+            .clone()
+            .unwrap_or_else(|| Shell::of(&crate::env::machine_level()));
+        let spawned = local::spawn(spec, &shell, log)
             .map_err(|error| format!("cannot start {}: {error}", spec.name))?;
 
         slot.write(
@@ -553,7 +570,7 @@ mod tests {
         }
 
         fn supervisor(&self, grace: Duration) -> Arc<Supervisor> {
-            Supervisor::new(&self.0.join("state"), grace)
+            Supervisor::with_shell(&self.0.join("state"), grace, Shell::plain("/bin/sh"))
         }
     }
 

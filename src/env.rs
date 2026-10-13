@@ -2,16 +2,16 @@
 //!
 //! A daemon outlives the shell that started it and serves every project on the machine, so its own
 //! environment is an accident of birth: whichever pane first ran a verb, carrying whatever that
-//! directory's mise or direnv files had already exported into it. Handed down whole, one project's `PORT`
+//! directory's prompt hooks had already exported into it. Handed down whole, one project's `PORT`
 //! becomes the floor under every other project's units.
 //!
-//! Neither `mise exec` nor `direnv exec` can undo that. Each layers a project's config over what it is
-//! handed and clears nothing it has no opinion about, so a var the project does not declare — by design, the caller's
+//! The unit's own shell cannot undo that. Its hooks layer a project's config over what the shell is
+//! handed and clear nothing they have no opinion about, so a var the project does not declare — by design, the caller's
 //! business — arrives untouched. A project that declares no `PORT` therefore inherits a stranger's.
 //!
 //! So nothing project-scoped crosses. What survives describes the machine and the user, and every
-//! project-scoped value reaches a unit the one way the spawn recipe intends: the env loaders run for
-//! the unit's own cwd.
+//! project-scoped value reaches a unit the one way the spawn recipe intends: the user's shell running
+//! its prompt hooks in the unit's own cwd.
 
 /// The machine and the user, never a project.
 const KEEP: &[&str] = &[

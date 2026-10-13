@@ -3,15 +3,15 @@ FROM rust:1-slim-bookworm
 ARG HERDR_VERSION=0.9.3
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl direnv lsof procps \
+ && apt-get install -y --no-install-recommends bash ca-certificates curl direnv fish lsof procps zsh \
  && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL -o /usr/local/bin/herdr \
       "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-$(uname -m)" \
  && chmod +x /usr/local/bin/herdr
 
-# The suite runs units under real mise and direnv; direnv comes from apt above.
-RUN curl -fsSL https://mise.run | sh
+# Units run in fish, zsh and bash with real mise and direnv hooks; the rest comes from apt above.
+RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
 # The docker CLI and its compose plugin, with no daemon: the suite only asks them about an unreachable
 # one.
@@ -28,6 +28,6 @@ ENV HERDR_STACK_IN_CONTAINER=1
 
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked && cargo test --locked --features herdr-tests --test herdr --no-run
+RUN cargo build --release --locked && cargo test --locked --features container-tests --test herdr --test shells --no-run
 
-CMD ["cargo", "test", "--locked", "--features", "herdr-tests", "--test", "herdr"]
+CMD ["cargo", "test", "--locked", "--features", "container-tests", "--test", "herdr", "--test", "shells"]

@@ -15,19 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      # The suite runs units under real mise and direnv, and asks a docker CLI with its compose plugin
-      # about a daemon that is not there. Ubuntu runners already have docker.
-      - run: curl -fsSL https://mise.run | sh
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y direnv
+      # The suite asks a docker CLI with its compose plugin about a daemon that is not there. Ubuntu
+      # runners already have both.
       - if: runner.os == 'macOS'
         run: |
-          brew install direnv docker docker-compose
+          brew install docker docker-compose
           mkdir -p ~/.docker/cli-plugins
           ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" ~/.docker/cli-plugins/docker-compose
       - run: cargo test --locked
 
-  herdr:
+  container:
     strategy:
       fail-fast: false
       matrix:
@@ -36,4 +33,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: tests/herdr/run.sh ${{ matrix.herdr }}
+      - run: tests/container/run.sh ${{ matrix.herdr }}

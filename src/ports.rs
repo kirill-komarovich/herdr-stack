@@ -1,7 +1,7 @@
 //! Which ports a local unit is listening on, observed rather than declared.
 //!
-//! A manifest never carries a port — every unit is spawned through the directory's env loaders, so the
-//! numbers live in the repo's mise or direnv files and change without anyone editing a manifest. The only honest answer is
+//! A manifest never carries a port — every unit starts in the user's shell with its prompt hooks run,
+//! so the numbers live in whatever those hooks read and change without anyone editing a manifest. The only honest answer is
 //! therefore the one the kernel gives: what is bound right now.
 //!
 //! The join is by **process group**. A unit is `setsid(2)`'d at spawn, so its pid is its group's, and

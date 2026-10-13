@@ -95,6 +95,9 @@ impl Daemon {
         std::fs::create_dir_all(state).expect("state root");
         let child = Endpoint::at(state)
             .command(exe())
+            // A unit runs in the user's shell, config and all; this one has none of either.
+            .env("HOME", state)
+            .env("SHELL", "/bin/sh")
             .spawn()
             .expect("daemon spawns");
         Endpoint::at(state)

@@ -3,11 +3,10 @@
 //! `pane.split` and `pane.send_input`.
 //!
 //! Each test runs a `herdr server` of its own under a `HOME` of its own, and only inside the container
-//! `tests/herdr/Dockerfile` builds: a `herdr` command run on a desktop picks up the calling pane's
+//! `tests/container/Dockerfile` builds: a `herdr` command run on a desktop picks up the calling pane's
 //! `HERDR_*` env, and a stray `server stop` then stops the user's real server.
 
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -46,10 +45,7 @@ impl Herdr {
         );
         let home = PathBuf::from("/tmp/herdr-tests").join(name);
         let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(home.join(".local/bin")).expect("home");
-        let mise = home.join(".local/bin/mise");
-        std::fs::write(&mise, "#!/bin/sh\nshift 2\nexec \"$@\"\n").expect("mise");
-        std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).expect("mise");
+        std::fs::create_dir_all(&home).expect("home");
 
         let server = isolated(Command::new("herdr"), &home)
             .arg("server")

@@ -16,9 +16,11 @@ is no release for the checked-out version, it builds from source with `cargo` in
 Requires Herdr 0.8.0 or later. Docker units need `docker compose`, and `lsof` reports listening
 ports.
 
-A local unit gets the env a shell in its directory would have. Each start runs it through
-`mise exec` and `direnv exec`, whichever are installed, so a restart picks up a changed `mise.toml`
-or `.envrc`. direnv still wants `direnv allow` after an `.envrc` changes.
+A local unit runs in your own shell, the one Herdr's `default_shell` names (else `$SHELL`), started
+in the unit's directory. The shell loads your config and runs its prompt hooks once, then becomes
+the unit. So whatever mise, direnv or any other prompt hook exports in that directory reaches the
+unit, and a restart picks up what they export now. Hooks are found in fish, zsh and bash; any other
+shell runs the unit without them. direnv still wants `direnv allow` after an `.envrc` changes.
 
 The popup and agents call `herdr-stack` by name, so put the installed binary on your `PATH`. It is
 `target/release/herdr-stack` inside the plugin checkout. Then bind the popup in Herdr's `config.toml`:
@@ -83,12 +85,13 @@ herdr plugin link .
 
 A linked plugin runs your working tree's `target/release/herdr-stack`, so rebuilding is enough.
 
-`cargo test` runs everything except the tests against a real Herdr. Those start herdr servers of
-their own, so they sit behind the `herdr-tests` feature and run only inside Docker. CI requires them
-against the oldest supported Herdr and the latest:
+`cargo test` runs everything except the tests that need a container: herdr servers of their own,
+and fish, zsh and bash running real mise and direnv hooks. Those sit behind the `container-tests`
+feature and run only inside Docker. CI requires them against the oldest supported Herdr and the
+latest:
 
 ```sh
-tests/herdr/run.sh 0.8.0 0.9.3
+tests/container/run.sh 0.8.0 0.9.3
 ```
 
 To release, set the same version in `Cargo.toml` and `herdr-plugin.toml`, then push a matching `v*` tag.

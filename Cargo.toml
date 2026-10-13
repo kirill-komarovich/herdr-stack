@@ -14,12 +14,17 @@ sha2 = "0.10.9"
 toml_edit = "0.22.27"
 
 [features]
-# Gates the tests that start herdr servers of their own: they belong in tests/herdr/Dockerfile only.
-herdr-tests = []
+# Gates the tests that belong in tests/container/Dockerfile only: herdr servers of their own, and
+# real shells running real mise and direnv hooks.
+container-tests = []
 
 [[test]]
 name = "herdr"
-required-features = ["herdr-tests"]
+required-features = ["container-tests"]
+
+[[test]]
+name = "shells"
+required-features = ["container-tests"]
 
 [profile.release]
 strip = true

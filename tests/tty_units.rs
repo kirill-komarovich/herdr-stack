@@ -73,6 +73,9 @@ impl Daemon {
     fn serving(root: &Path) -> Daemon {
         let child = Endpoint::at(root)
             .command(exe())
+            // A unit runs in the user's shell, config and all; this one has none of either.
+            .env("HOME", root)
+            .env("SHELL", "/bin/sh")
             .spawn()
             .expect("daemon spawns");
         let daemon = Daemon {

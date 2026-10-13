@@ -66,6 +66,8 @@ impl Stage {
 
         let daemon = Endpoint::at(state_root(&home))
             .command(Path::new(env!("CARGO_BIN_EXE_herdr-stack")))
+            .env("HOME", &home)
+            .env("SHELL", "/bin/sh")
             .spawn()
             .expect("daemon spawns");
         let stage = Stage {
@@ -209,6 +211,10 @@ fn two_panes_at_once_both_reach_the_process_and_both_see_the_output() {
 
     let mut one = stage.attach("probe", 80);
     let mut two = stage.attach("probe", 80);
+    // A pane sees output only from when it attached, so neither is typed at before both have.
+    for pane in [&mut one, &mut two] {
+        pane.wait_for("attached");
+    }
 
     one.press("from one\n");
     for pane in [&mut one, &mut two] {
