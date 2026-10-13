@@ -57,15 +57,16 @@ impl Scratch {
     }
 
     /// A `HOME` whose Herdr config names bash as the panes' shell, holding only the rc this test wrote
-    /// for it. Not a login shell, which on macOS would read `.bash_profile` instead.
+    /// for it, which a login bash reads through the usual `.bash_profile`.
     fn home_with_bashrc(&self, bashrc: &str) -> PathBuf {
         let home = self.root.join("home");
         std::fs::create_dir_all(home.join(".config/herdr")).expect("home");
         std::fs::write(
             home.join(".config/herdr/config.toml"),
-            "[terminal]\ndefault_shell = \"/bin/bash\"\nshell_mode = \"non_login\"\n",
+            "[terminal]\ndefault_shell = \"/bin/bash\"\n",
         )
         .expect("herdr config");
+        std::fs::write(home.join(".bash_profile"), ". ~/.bashrc\n").expect(".bash_profile");
         std::fs::write(home.join(".bashrc"), bashrc).expect(".bashrc");
         home
     }
@@ -99,10 +100,15 @@ impl Daemon {
     /// A unit runs in the user's shell, config and all, so the daemon is told whose: `home`'s and
     /// `shell`'s, never the developer's running the tests.
     fn serving_in(root: &Path, home: &Path, shell: &str) -> Daemon {
+        Daemon::serving_on(root, home, shell, &std::env::var("PATH").expect("PATH"))
+    }
+
+    fn serving_on(root: &Path, home: &Path, shell: &str, path: &str) -> Daemon {
         let child = Endpoint::at(root)
             .command(exe())
             .env("HOME", home)
             .env("SHELL", shell)
+            .env("PATH", path)
             .spawn()
             .expect("daemon spawns");
         let daemon = Daemon {
@@ -583,6 +589,43 @@ fn a_unit_this_project_already_runs_is_refused_by_the_pid_it_is_running_as() {
     assert!(local::group_empty(leader));
 }
 
+/// The daemon's `PATH` is whatever the pane that first ran a verb had, often with another directory's
+/// tools already activated. A unit's shell starts on a fresh one, so nothing in it shadows what this
+/// directory's own config puts on `PATH`.
+#[test]
+fn the_daemons_path_never_reaches_a_unit() {
+    let scratch = Scratch::new("fresh-path");
+    let shadow = scratch.root.join("shadow");
+    std::fs::create_dir_all(&shadow).expect("shadow");
+    let tool = shadow.join("hd-shadowed-tool");
+    std::fs::write(&tool, "#!/bin/sh\necho shadowed\n").expect("tool");
+    std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("executable");
+    let project = scratch.project(
+        "harmony",
+        "[local.probe]\n\
+         cmd = [\"sh\", \"-c\", \"command -v hd-shadowed-tool || echo no-shadow; sleep 30\"]\n",
+    );
+    let state = scratch.state();
+    let polluted = format!(
+        "{}:{}",
+        shadow.display(),
+        std::env::var("PATH").expect("PATH")
+    );
+    let daemon = Daemon::serving_on(&state, &state, "/bin/sh", &polluted);
+    let mut link = daemon.link();
+    let unit = unit_of(&project, "probe");
+
+    link.start(&project, &unit).expect("start");
+    assert!(
+        until(PATIENCE, || log_of(&state, &project, "probe")
+            .contains("no-shadow")),
+        "{:?}",
+        log_of(&state, &project, "probe")
+    );
+    link.stop(&project, &unit).expect("stop");
+}
+
 /// Whatever mise, direnv or anything else exports in a directory, it does so from a prompt hook, so a
 /// hook of this test's own stands in for all of them.
 #[test]
@@ -694,7 +737,7 @@ fn a_daemon_stays_for_as_long_as_it_owns_a_unit_and_the_last_stop_is_its_shutdow
     let serving = {
         let state = state.clone();
         std::thread::spawn(move || {
-            herdr_stack::daemon::serve_with_idle(&state, idle, Shell::plain("/bin/sh"))
+            herdr_stack::daemon::serve_with_idle(&state, idle, Shell::new("/bin/sh"))
         })
     };
 

@@ -17,10 +17,12 @@ Requires Herdr 0.8.0 or later. Docker units need `docker compose`, and `lsof` re
 ports.
 
 A local unit runs in your own shell, the one Herdr's `default_shell` names (else `$SHELL`), started
-in the unit's directory. The shell loads your config and runs its prompt hooks once, then becomes
-the unit. So whatever mise, direnv or any other prompt hook exports in that directory reaches the
-unit, and a restart picks up what they export now. Hooks are found in fish, zsh and bash; any other
-shell runs the unit without them. direnv still wants `direnv allow` after an `.envrc` changes.
+in the unit's directory as a login shell on a fresh `PATH`, the way a new terminal starts. The shell
+loads your config and runs its prompt hooks once, then becomes the unit. So whatever mise, direnv or
+any other prompt hook exports in that directory reaches the unit, and a restart picks up what they
+export now. Hooks are found in fish, zsh and bash; any other shell runs the unit without them. A
+login bash reads `.bash_profile`, so hooks set up in `.bashrc` need it to source that. direnv still
+wants `direnv allow` after an `.envrc` changes.
 
 The popup and agents call `herdr-stack` by name, so put the installed binary on your `PATH`. It is
 `target/release/herdr-stack` inside the plugin checkout. Then bind the popup in Herdr's `config.toml`:

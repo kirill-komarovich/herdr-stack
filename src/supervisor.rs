@@ -154,7 +154,7 @@ impl Supervisor {
             .shell
             .clone()
             .unwrap_or_else(|| Shell::of(&crate::env::machine_level()));
-        let spawned = local::spawn(spec, &shell, log)
+        let spawned = local::spawn(spec, &shell, log, &slot.log_path(&handle.unit))
             .map_err(|error| format!("cannot start {}: {error}", spec.name))?;
 
         slot.write(
@@ -570,7 +570,7 @@ mod tests {
         }
 
         fn supervisor(&self, grace: Duration) -> Arc<Supervisor> {
-            Supervisor::with_shell(&self.0.join("state"), grace, Shell::plain("/bin/sh"))
+            Supervisor::with_shell(&self.0.join("state"), grace, Shell::new("/bin/sh"))
         }
     }
 

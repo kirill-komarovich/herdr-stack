@@ -14,9 +14,8 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -56,16 +55,19 @@ pub struct Spawned {
 
 /// Everything about the spawn except the fork, so the recipe can be read off a `Command`. Env layers
 /// innermost last: `base` — the machine-level part of the daemon's own, `crate::env` for why only
-/// that part — then the manifest's, then whatever the shell's hooks export in the unit's directory.
-pub fn command<I>(spec: &Spec, shell: &Shell, base: I) -> Command
+/// that part — with `PATH` replaced by a fresh one, then the manifest's, then whatever the shell's
+/// config and hooks export in the unit's directory.
+pub fn command<I>(spec: &Spec, shell: &Shell, log: &Path, base: I) -> Command
 where
     I: IntoIterator<Item = (String, String)>,
 {
     let quiet = !spec.tty && !spec.env.contains_key(QUIET_TERM.0);
-    let mut command = shell.command(&spec.cmd, !spec.tty, quiet);
+    let piped_log = (!spec.tty).then_some(log);
+    let mut command = shell.command(&spec.cmd, piped_log, quiet);
     command.current_dir(&spec.cwd);
     command.env_clear();
     command.envs(base);
+    command.env("PATH", shell::FRESH_PATH);
     if spec.tty {
         command.env(TERM.0, TERM.1);
     } else if quiet {
@@ -77,12 +79,12 @@ where
 
 /// The caller owns the log's rotation. A `tty` unit never writes to `log` itself; the thread reading
 /// its terminal does.
-pub fn spawn(spec: &Spec, shell: &Shell, log: File) -> std::io::Result<Spawned> {
-    let mut command = command(spec, shell, crate::env::machine_level());
+pub fn spawn(spec: &Spec, shell: &Shell, log: File, log_path: &Path) -> std::io::Result<Spawned> {
+    let mut command = command(spec, shell, log_path, crate::env::machine_level());
     command.stdin(Stdio::null());
     let pty = match spec.tty {
         false => {
-            on_pipes(&mut command, &log)?;
+            on_pipes(&mut command);
             None
         }
         // `login_tty(3)` puts the child in a session of its own as `setsid(2)` would, and the terminal
@@ -118,29 +120,16 @@ pub fn spawn(spec: &Spec, shell: &Shell, log: File) -> std::io::Result<Spawned> 
 /// `setsid` returns EPERM — measured — so the two cannot be combined.
 ///
 /// The shell itself writes to `/dev/null`: an interactive shell with no terminal complains on the way
-/// up, and fish writes its terminal setup straight to stdout whatever it is redirected to. The log
-/// waits on `shell::LOG_FD` for the script to hand to the unit.
-fn on_pipes(command: &mut Command, log: &File) -> std::io::Result<()> {
+/// up, and fish writes its terminal setup straight to stdout whatever it is redirected to. Only the
+/// unit it becomes writes to the log, which the script opens by path.
+fn on_pipes(command: &mut Command) {
     command.stdout(Stdio::null()).stderr(Stdio::null());
-    let log = log.as_raw_fd();
     unsafe {
-        command.pre_exec(move || {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            // `dup2` onto itself leaves close-on-exec set, so that case clears it instead.
-            let handed = if log == shell::LOG_FD {
-                libc::fcntl(log, libc::F_SETFD, 0)
-            } else {
-                libc::dup2(log, shell::LOG_FD)
-            };
-            match handed {
-                -1 => Err(std::io::Error::last_os_error()),
-                _ => Ok(()),
-            }
+        command.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
         });
     }
-    Ok(())
 }
 
 pub fn term_group(pid: u32) -> std::io::Result<()> {
@@ -239,7 +228,7 @@ mod tests {
     use std::path::Path;
 
     fn bash() -> Shell {
-        Shell::plain("/bin/bash")
+        Shell::new("/bin/bash")
     }
 
     fn argv_of(command: &Command) -> Vec<String> {
@@ -275,7 +264,7 @@ mod tests {
         let base = base
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()));
-        command(&spec(), &bash(), base)
+        command(&spec(), &bash(), Path::new("/state/log"), base)
     }
 
     fn built_on_a_terminal(base: &[(&str, &str)], env: &[(&str, &str)]) -> Command {
@@ -288,7 +277,7 @@ mod tests {
         let base = base
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()));
-        command(&spec, &bash(), base)
+        command(&spec, &bash(), Path::new("/state/log"), base)
     }
 
     #[test]
@@ -298,7 +287,7 @@ mod tests {
             env_of(&command).get("TERM").map(String::as_str),
             Some("xterm-256color")
         );
-        assert!(!argv_of(&command)[3].contains("unset TERM"));
+        assert!(!argv_of(&command)[4].contains("unset TERM"));
     }
 
     #[test]
@@ -308,21 +297,21 @@ mod tests {
             env_of(&command).get("TERM").map(String::as_str),
             Some("xterm")
         );
-        assert!(!argv_of(&command)[3].contains("unset TERM"));
+        assert!(!argv_of(&command)[4].contains("unset TERM"));
     }
 
     #[test]
     fn a_unit_runs_in_the_shell_from_its_own_directory_and_becomes_its_argv() {
         let command = built(&[]);
         let argv = argv_of(&command);
-        assert_eq!(&argv[..3], ["/bin/bash", "-i", "-c"]);
+        assert_eq!(&argv[..4], ["/bin/bash", "-l", "-i", "-c"]);
         // The hooks' complaints and then the unit itself write to the log; the shell never does.
         assert!(
-            argv[3].ends_with("exec \"$@\" >&3 2>&3 3>&-"),
+            argv[4].ends_with("exec \"$@\" >>\"$herdr_stack_log\" 2>&1"),
             "{}",
-            argv[3]
+            argv[4]
         );
-        assert_eq!(&argv[5..], ["bin/vite", "dev"]);
+        assert_eq!(&argv[6..], ["/state/log", "bin/vite", "dev"]);
         assert_eq!(
             command.get_current_dir(),
             Some(Path::new("/repos/storefront"))
@@ -336,16 +325,22 @@ mod tests {
             env_of(&command).get("TERM").map(String::as_str),
             Some("dumb")
         );
-        assert!(argv_of(&command)[3].contains("unset TERM"));
+        assert!(argv_of(&command)[4].contains("unset TERM"));
+    }
+
+    #[test]
+    fn the_daemons_path_never_reaches_the_units_shell() {
+        let env = env_of(&built(&[("PATH", "/elsewhere/mise/shims:/usr/bin")]));
+        assert_eq!(env.get("PATH").map(String::as_str), Some(shell::FRESH_PATH));
     }
 
     #[test]
     fn the_units_env_is_layered_over_the_daemons_own_and_wins() {
         let env = env_of(&built(&[
-            ("PATH", "/usr/bin"),
+            ("LANG", "en_US.UTF-8"),
             ("VITE_RUBY_HOST", "from-the-daemon"),
         ]));
-        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
+        assert_eq!(env.get("LANG").map(String::as_str), Some("en_US.UTF-8"));
         assert_eq!(
             env.get("VITE_RUBY_HOST").map(String::as_str),
             Some("127.0.0.1"),

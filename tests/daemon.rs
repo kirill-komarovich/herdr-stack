@@ -179,7 +179,7 @@ fn a_client_holding_the_link_keeps_the_daemon_past_its_idle_window() {
     let serving = {
         let root = root.clone();
         std::thread::spawn(move || {
-            daemon::serve_with_idle(&root, Duration::from_millis(200), Shell::plain("/bin/sh"))
+            daemon::serve_with_idle(&root, Duration::from_millis(200), Shell::new("/bin/sh"))
         })
     };
 
@@ -215,7 +215,7 @@ fn a_daemon_that_cannot_take_the_lock_reports_itself_redundant() {
         .expect("handshake");
 
     assert_eq!(
-        daemon::serve_with_idle(&root, Duration::from_millis(50), Shell::plain("/bin/sh"))
+        daemon::serve_with_idle(&root, Duration::from_millis(50), Shell::new("/bin/sh"))
             .expect("serve returns"),
         daemon::Outcome::Redundant
     );
