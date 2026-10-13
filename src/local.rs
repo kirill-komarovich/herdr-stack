@@ -198,16 +198,23 @@ pub fn group_empty(pgid: u32) -> bool {
     let Ok(output) = Command::new("/bin/ps")
         .arg("-ax")
         .arg("-o")
-        .arg("pid=,pgid=")
+        .arg("pid=,pgid=,stat=")
         .output()
     else {
         // Unanswerable is not the same as empty: escalating on a failed `ps` is the safer half.
         return false;
     };
-    !String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+    !holds_a_live_member(&String::from_utf8_lossy(&output.stdout), pgid)
+}
+
+/// A zombie is not counted: it runs nothing and no signal reaches it, and where nothing reaps orphans
+/// — a container whose init is not one — it would hold every stop to the full grace and escalation.
+fn holds_a_live_member(table: &str, pgid: u32) -> bool {
+    table.lines().any(|line| {
         let mut columns = line.split_whitespace();
-        let (_, group) = (columns.next(), columns.next());
+        let (_, group, stat) = (columns.next(), columns.next(), columns.next());
         group.and_then(|group| group.parse::<u32>().ok()) == Some(pgid)
+            && !stat.is_some_and(|stat| stat.starts_with('Z'))
     })
 }
 
@@ -357,6 +364,14 @@ mod tests {
         gone.wait().expect("reaped");
         assert!(!alive(pid));
         assert!(!still_running(pid, ps_field(pid, "lstart").as_deref()));
+    }
+
+    #[test]
+    fn a_group_left_with_only_zombies_is_empty() {
+        let table = "  101   100 S\n  102   100 Z\n  103   200 Z+\n";
+        assert!(holds_a_live_member(table, 100));
+        assert!(!holds_a_live_member(table, 200));
+        assert!(!holds_a_live_member(table, 300));
     }
 
     #[test]
