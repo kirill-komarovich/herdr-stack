@@ -17,6 +17,9 @@ use std::time::Duration;
 pub const PLUGIN_ID: &str = "herdr-stack";
 pub const ENTRYPOINT: &str = "tail";
 pub const LOG_ENV: &str = "HERDR_STACK_LOG";
+/// What an hc terminal opened onto a unit calls itself: hc has no tab to rename, and a window labels
+/// a terminal by its title.
+pub const TITLE_ENV: &str = "HERDR_STACK_TITLE";
 
 const POLL: Duration = Duration::from_millis(150);
 pub const RESTARTED: &str = "── log restarted ──";
@@ -110,6 +113,18 @@ impl Follower {
     }
 }
 
+pub fn entitle(out: &mut impl Write) -> io::Result<()> {
+    match std::env::var(TITLE_ENV) {
+        Ok(title) if !title.is_empty() => write!(out, "{}", title_sequence(&title)),
+        _ => Ok(()),
+    }
+}
+
+fn title_sequence(title: &str) -> String {
+    let title: String = title.chars().filter(|c| !c.is_control()).collect();
+    format!("\u{1b}]2;{title}\u{7}")
+}
+
 /// `tail` mode: the plugin pane's whole job. It never exits on its own — the pane closing is what
 /// ends it.
 pub fn run() -> io::Result<()> {
@@ -122,6 +137,7 @@ pub fn run() -> io::Result<()> {
         })?;
     let mut follower = Follower::watching(PathBuf::from(path));
     let mut out = io::stdout();
+    entitle(&mut out)?;
     writeln!(out, "{}", follower.path().display())?;
     loop {
         pump(&mut follower, &mut out)?;
@@ -146,6 +162,12 @@ fn pump(follower: &mut Follower, out: &mut impl Write) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_is_an_osc_2_that_no_control_character_can_end_early() {
+        assert_eq!(title_sequence("rails"), "\u{1b}]2;rails\u{7}");
+        assert_eq!(title_sequence("a\u{7}b\u{1b}c"), "\u{1b}]2;abc\u{7}");
+    }
 
     use toml_edit::DocumentMut;
 

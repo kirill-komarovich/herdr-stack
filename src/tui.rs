@@ -25,6 +25,8 @@ use serde_json::{Value, json};
 use crate::client::{self, Endpoint, Link, Target};
 use crate::errand::{Answer, Errands};
 use crate::form::Form;
+use crate::hc::Hc;
+use crate::host::Host;
 use crate::manifest::{LocalUnit, Project};
 use crate::peek::{self, Peek};
 use crate::project::Resolution;
@@ -260,7 +262,8 @@ fn event_loop() -> io::Result<()> {
             },
             KeyCode::Char('O') => match open_pane(view.as_ref(), &rows, cursor) {
                 // The pane outlives us and may want the keyboard, and only one of us can have it.
-                Ok(()) => return Ok(()),
+                Ok(None) => return Ok(()),
+                Ok(Some(said)) => notice = Some(said),
                 Err(complaint) => notice = Some(complaint),
             },
             _ => {}
@@ -472,15 +475,86 @@ fn open_peek(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Peek, S
     peek::Source::of(&Store::at(state::root()), project, row.kind, &row.name)?.open()
 }
 
+/// What `O` opens, said once for either Herdr: which of this binary's modes, what that mode is to
+/// work on, and the unit it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Opening {
+    entrypoint: &'static str,
+    env: Vec<(&'static str, String)>,
+    label: String,
+}
+
+/// `Ok(Some(notice))` keeps the popup up to say where the opening went; `Ok(None)` hands the screen
+/// over to it.
+fn open_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Option<String>, String> {
+    let opening = pane_request(view, rows, cursor)?;
+    match Host::detect()? {
+        Host::Herdr => {
+            let opened = crate::herdr::request("plugin.pane.open", herdr_params(&opening))
+                .map_err(|error| error.to_string())?;
+            rename_tab(&opened, &opening.label);
+            Ok(None)
+        }
+        Host::Hc(hc) => open_in_hc(&hc, &opening),
+    }
+}
+
 /// Herdr runs the pane the manifest declares; all a request adds is what that pane is to open onto. No
 /// `cwd` is passed: the declared argv is relative, and naming a cwd is measured to resolve it there
 /// instead of in the plugin root, where the binary actually is.
-fn open_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(), String> {
-    let (params, label) = pane_request(view, rows, cursor)?;
-    let opened =
-        crate::herdr::request("plugin.pane.open", params).map_err(|error| error.to_string())?;
-    rename_tab(&opened, &label);
-    Ok(())
+fn herdr_params(opening: &Opening) -> Value {
+    json!({
+        "plugin_id": tail::PLUGIN_ID,
+        "entrypoint": opening.entrypoint,
+        "env": env_object(&opening.env),
+        "focus": true,
+    })
+}
+
+/// No `herdr.tab`, so a window gives the opening a tab of its own in the popup's space, as herdr's
+/// plugin pane gets. No parent either: the popup is about to end, and a child would end with it.
+fn open_in_hc(hc: &Hc, opening: &Opening) -> Result<Option<String>, String> {
+    let place = hc.place()?;
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("cannot locate our own executable: {error}"))?;
+    let mut labels = serde_json::Map::new();
+    if let Some(space) = &place.space {
+        labels.insert(crate::hc::SPACE_LABEL.into(), space.clone().into());
+    }
+    labels.insert(crate::hc::UNIT_LABEL.into(), opening.label.clone().into());
+    labels.insert(crate::hc::VIEW_LABEL.into(), opening.entrypoint.into());
+    let mut env = opening.env.clone();
+    env.push((tail::TITLE_ENV, opening.label.clone()));
+    let mut params = json!({
+        "argv": [exe.to_string_lossy(), opening.entrypoint],
+        "env": env_object(&env),
+        "labels": labels,
+        "no_parent": true,
+        "no_notify": true,
+    });
+    if let Ok(cwd) = std::env::current_dir() {
+        params["cwd"] = cwd.to_string_lossy().into();
+    }
+    let ran = hc.request("terminal.run", params)?;
+    if place.space.is_some() {
+        return Ok(None);
+    }
+    let address = ran
+        .get("address")
+        .and_then(Value::as_str)
+        .unwrap_or("its terminal");
+    Ok(Some(format!(
+        "{} opened in {address}, which no window shows: hc attach {address}",
+        opening.label
+    )))
+}
+
+fn env_object(env: &[(&'static str, String)]) -> Value {
+    Value::Object(
+        env.iter()
+            .map(|(key, value)| (key.to_string(), Value::String(value.clone())))
+            .collect(),
+    )
 }
 
 /// The manifest declares one title for every unit, so the tab a unit opens in is renamed after it once
@@ -502,33 +576,25 @@ fn tab_opened(opened: &Value) -> Option<&str> {
 /// the pane that types, and everything else — a unit on pipes, a stopped one, a docker service — has
 /// only its log to show. Why a row cannot be typed at is not worth saying when there is a log to show
 /// instead; the refusal a row does get is the log's own.
-fn pane_request(
-    view: Option<&View>,
-    rows: &[Row],
-    cursor: usize,
-) -> Result<(Value, String), String> {
+fn pane_request(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Opening, String> {
     match attachable(view, rows, cursor) {
-        Ok((project, unit)) => Ok((attach_pane(project, unit), unit.name.clone())),
+        Ok((project, unit)) => Ok(attach_pane(project, unit)),
         Err(_) => log_pane(view, rows, cursor),
     }
 }
 
-fn log_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<(Value, String), String> {
+fn log_pane(view: Option<&View>, rows: &[Row], cursor: usize) -> Result<Opening, String> {
     let view = view.ok_or_else(|| "no project here".to_string())?;
     let path = log_path(&Store::at(state::root()), view, rows, cursor)?;
     let name = rows
         .get(cursor)
         .map(|row| row.name.clone())
         .unwrap_or_default();
-    Ok((
-        json!({
-            "plugin_id": tail::PLUGIN_ID,
-            "entrypoint": tail::ENTRYPOINT,
-            "env": {tail::LOG_ENV: path.to_string_lossy()},
-            "focus": true,
-        }),
-        name,
-    ))
+    Ok(Opening {
+        entrypoint: tail::ENTRYPOINT,
+        env: vec![(tail::LOG_ENV, path.to_string_lossy().into_owned())],
+        label: name,
+    })
 }
 
 /// The unit the row under the cursor would be typed at, or why there is none. Decided before anything
@@ -568,16 +634,18 @@ fn attachable<'a>(
     Ok((project, unit))
 }
 
-fn attach_pane(project: &Project, unit: &LocalUnit) -> Value {
-    json!({
-        "plugin_id": tail::PLUGIN_ID,
-        "entrypoint": crate::attach::ENTRYPOINT,
-        "env": {
-            crate::attach::PROJECT_ENV: project.root.to_string_lossy(),
-            crate::attach::UNIT_ENV: unit.name,
-        },
-        "focus": true,
-    })
+fn attach_pane(project: &Project, unit: &LocalUnit) -> Opening {
+    Opening {
+        entrypoint: crate::attach::ENTRYPOINT,
+        env: vec![
+            (
+                crate::attach::PROJECT_ENV,
+                project.root.to_string_lossy().into_owned(),
+            ),
+            (crate::attach::UNIT_ENV, unit.name.clone()),
+        ],
+        label: unit.name.clone(),
+    }
 }
 
 const LAUNCHING: &str = "splitting a pane and starting an agent…";
@@ -992,6 +1060,8 @@ fn pad(cell: &str, width: usize) -> String {
 mod tests {
     use super::*;
 
+    use crate::hc::{self, fake};
+
     fn row(name: &str, kind: &'static str, note: &str) -> Row {
         Row {
             glyph: rows::UNKNOWN_GLYPH,
@@ -1141,8 +1211,10 @@ mod tests {
         running(&mut rows, "console");
         running(&mut rows, "vite");
 
-        let (params, label) = pane_request(Some(&view), &rows, 0).expect("a terminal to type at");
-        assert_eq!(label, "console");
+        let opening = pane_request(Some(&view), &rows, 0).expect("a terminal to type at");
+        assert_eq!(opening.label, "console");
+        let params = herdr_params(&opening);
+        assert_eq!(params["plugin_id"], tail::PLUGIN_ID);
         assert_eq!(params["entrypoint"], crate::attach::ENTRYPOINT);
         assert_eq!(params["env"][crate::attach::UNIT_ENV], "console");
         assert_eq!(
@@ -1153,6 +1225,71 @@ mod tests {
         // Running, but on a pipe: what it has to show is its log, and so is what it refuses with.
         let complaint = pane_request(Some(&view), &rows, 1).unwrap_err();
         assert!(complaint.contains("no log yet for vite"), "{complaint}");
+    }
+
+    fn opening() -> Opening {
+        Opening {
+            entrypoint: crate::attach::ENTRYPOINT,
+            env: vec![
+                (crate::attach::PROJECT_ENV, "/repos/storefront".into()),
+                (crate::attach::UNIT_ENV, "console".into()),
+            ],
+            label: "console".into(),
+        }
+    }
+
+    fn opening_core(name: &str, labels: Value) -> fake::Core {
+        fake::Core::answering(name, move |method, _| match method {
+            "terminal.get" => json!({"result": {"address": "t1", "labels": labels}}),
+            "terminal.run" => json!({"result": {"address": "t9"}}),
+            other => {
+                json!({"error": {"code": -32601, "message": other, "data": {"kind": "unsupported"}}})
+            }
+        })
+    }
+
+    #[test]
+    fn an_hc_opening_is_this_binary_in_a_new_tab_of_the_popup_s_space() {
+        let core = opening_core(
+            "open-space",
+            json!({hc::SPACE_LABEL: "sp1", hc::TAB_LABEL: "tb1"}),
+        );
+        assert_eq!(open_in_hc(&core.hc(), &opening()), Ok(None));
+        let asked = core.asked();
+        let run = asked
+            .iter()
+            .find(|asked| asked["method"] == "terminal.run")
+            .expect("a terminal.run");
+        let params = &run["params"];
+        let exe = std::env::current_exe().expect("exe");
+        assert_eq!(
+            params["argv"],
+            json!([exe.to_string_lossy(), crate::attach::ENTRYPOINT])
+        );
+        assert_eq!(
+            params["labels"],
+            json!({
+                hc::SPACE_LABEL: "sp1",
+                hc::UNIT_LABEL: "console",
+                hc::VIEW_LABEL: crate::attach::ENTRYPOINT,
+            })
+        );
+        assert_eq!(params["env"][crate::attach::UNIT_ENV], "console");
+        assert_eq!(
+            params["env"][crate::attach::PROJECT_ENV],
+            "/repos/storefront"
+        );
+        assert_eq!(params["env"][tail::TITLE_ENV], "console");
+        assert_eq!(params["no_parent"], true);
+    }
+
+    #[test]
+    fn an_hc_opening_with_no_window_to_land_in_says_how_to_reach_it() {
+        let core = opening_core("open-hidden", json!({}));
+        let notice = open_in_hc(&core.hc(), &opening())
+            .expect("opened")
+            .expect("a notice");
+        assert!(notice.contains("hc attach t9"), "{notice}");
     }
 
     #[test]
