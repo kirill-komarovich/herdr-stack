@@ -4,6 +4,9 @@ A [Herdr](https://herdr.dev) plugin that runs a project's dev stack in the backg
 compose services and the dev servers you would otherwise keep open in terminal tabs. One daemon owns
 them all. You drive it from a popup TUI, and agents drive it from a JSON CLI.
 
+It works with herdr 0.9 (Herdr TUI) and with Herdr 2's core, `hc`. One daemon serves both, so a stack
+started under one shows under the other.
+
 ## Install
 
 ```sh
@@ -35,6 +38,33 @@ command = "herdr-stack"
 width = "90%"
 height = "80%"
 ```
+
+### Herdr 2 (hc)
+
+hc has no plugin manager. Put the release binary for your platform on your `PATH`:
+
+```sh
+version=0.0.4 target=aarch64-apple-darwin   # or x86_64-apple-darwin, {x86_64,aarch64}-unknown-linux-musl
+curl -fsSL "https://github.com/kirill-komarovich/herdr-stack/releases/download/v$version/herdr-stack-$target.tar.gz" \
+  | tar -xz -C ~/.local/bin herdr-stack
+```
+
+To update, fetch the newer version the same way. A daemon already running keeps its build until it
+has run no unit for a minute.
+
+Run `herdr-stack` in a terminal of the space you are working in. It finds the project from its own
+directory, else from the directories of the other terminals in its space (their `herdr.space`
+label). `O` opens a unit's log, or the terminal of a running `tty` unit, as a new hc terminal labelled
+into that space, so the window shows it as a new tab. `g` starts the agent in a shell in the TUI's
+own tab. When the TUI's terminal is in no space, `O` says the terminal's address instead, for
+`hc attach`.
+
+A unit runs in herdr's `default_shell` when herdr has one, else the first word of hc's `shell`
+(`~/.config/herdr-core/config.toml`), else `$SHELL`.
+
+The TUI tells the two apart by its environment: an hc terminal carries `HC_TERMINAL_ID` and
+`HC_TERMINAL_SOCKET`, and a herdr popup `HERDR_ACTIVE_PANE_CWD`. When something left both set, name
+one with `HERDR_STACK_HOST=herdr` or `HERDR_STACK_HOST=hc`.
 
 ## Configure a project
 
@@ -94,6 +124,13 @@ latest:
 
 ```sh
 tests/container/run.sh 0.8.0 0.9.3
+```
+
+The hc tests start a core of their own under `/tmp` (their own `HC_SESSION`, state, config and
+`HOME`), with the installed `~/.local/bin/hc` or `HC_BIN`:
+
+```sh
+cargo test --features hc-tests --test hc
 ```
 
 To release, set the same version in `Cargo.toml` and `herdr-plugin.toml`, then push a matching `v*` tag.
