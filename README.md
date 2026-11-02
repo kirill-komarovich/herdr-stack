@@ -44,7 +44,7 @@ height = "80%"
 hc has no plugin manager. Put the release binary for your platform on your `PATH`:
 
 ```sh
-version=0.0.4 target=aarch64-apple-darwin   # or x86_64-apple-darwin, {x86_64,aarch64}-unknown-linux-musl
+version=0.0.5 target=aarch64-apple-darwin   # or x86_64-apple-darwin, {x86_64,aarch64}-unknown-linux-musl
 curl -fsSL "https://github.com/kirill-komarovich/herdr-stack/releases/download/v$version/herdr-stack-$target.tar.gz" \
   | tar -xz -C ~/.local/bin herdr-stack
 ```
