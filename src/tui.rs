@@ -652,9 +652,10 @@ const LAUNCHING: &str = "splitting a pane and starting an agent…";
 
 fn hand_to_agent() -> Result<(), String> {
     let config = crate::agent::Config::load()?;
-    let dir = crate::agent::target_dir()
+    let host = Host::detect()?;
+    let dir = crate::agent::target_dir(&host)
         .ok_or_else(|| "cannot tell which repository you are in".to_string())?;
-    crate::agent::launch(&config, &dir).map(|_| ())
+    crate::agent::launch(&host, &config, &dir).map(|_| ())
 }
 
 /// A popup is session-modal and owns the keyboard, so a panic that left the terminal in raw mode
