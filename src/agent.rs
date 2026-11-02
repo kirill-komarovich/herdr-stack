@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use toml_edit::DocumentMut;
 
+use crate::hc::Hc;
 use crate::herdr::{self, Error, Snapshot, expand_tilde};
+use crate::host::Host;
 
 const CONFIG: &str = ".config/herdr/plugins/config/herdr-stack/config.toml";
 
@@ -143,17 +145,22 @@ pub fn save_to(path: &Path, config: &Config) -> Result<(), String> {
 
 #[derive(Debug)]
 pub struct Launched {
-    pub pane_id: String,
+    /// herdr's pane id, or hc's terminal address.
+    pub terminal: String,
     pub dir: PathBuf,
 }
 
-/// Where the manifest should land: the repository holding the pane the user was looking at.
-pub fn target_dir() -> Option<PathBuf> {
-    let pane_cwd = active_pane_cwd().or_else(|| {
-        Snapshot::fetch()
-            .ok()
-            .and_then(|snapshot| snapshot.focused_pane_cwd())
-    })?;
+/// Where the manifest should land: the repository holding the pane the user was looking at, which
+/// under hc is where the popup's own terminal started.
+pub fn target_dir(host: &Host) -> Option<PathBuf> {
+    let pane_cwd = match host {
+        Host::Herdr => active_pane_cwd().or_else(|| {
+            Snapshot::fetch()
+                .ok()
+                .and_then(|snapshot| snapshot.focused_pane_cwd())
+        })?,
+        Host::Hc(_) => std::env::current_dir().ok()?,
+    };
     Some(repo_root(&pane_cwd))
 }
 
@@ -178,7 +185,38 @@ pub fn prompt(dir: &Path) -> String {
     format!("{SKILL_COMMAND} {}", dir.display())
 }
 
-pub fn launch(config: &Config, dir: &Path) -> Result<Launched, String> {
+pub fn launch(host: &Host, config: &Config, dir: &Path) -> Result<Launched, String> {
+    match host {
+        Host::Herdr => launch_in_herdr(config, dir),
+        Host::Hc(hc) => launch_in_hc(hc, config, dir),
+    }
+}
+
+/// The machine's own shell, in the popup's tab, with the command typed into it as into herdr's split:
+/// a wrapper or a shell function the command names resolves there. No parent, since the popup is
+/// about to end.
+fn launch_in_hc(hc: &Hc, config: &Config, dir: &Path) -> Result<Launched, String> {
+    let place = hc.place()?;
+    let ran = hc.request(
+        "terminal.run",
+        json!({"cwd": dir, "labels": place.labels(), "no_parent": true, "no_notify": true}),
+    )?;
+    let terminal = ran
+        .get("address")
+        .and_then(|address| address.as_str())
+        .ok_or("terminal.run: reply carries no address")?
+        .to_string();
+    hc.request(
+        "terminal.send",
+        json!({"terminal": terminal, "text": config.command_line_with(&prompt(dir))}),
+    )?;
+    Ok(Launched {
+        terminal,
+        dir: dir.to_path_buf(),
+    })
+}
+
+fn launch_in_herdr(config: &Config, dir: &Path) -> Result<Launched, String> {
     let pane = herdr::request(
         "pane.split",
         json!({"direction": "right", "cwd": dir, "focus": true}),
@@ -198,7 +236,7 @@ pub fn launch(config: &Config, dir: &Path) -> Result<Launched, String> {
     .map_err(stringify)?;
 
     Ok(Launched {
-        pane_id,
+        terminal: pane_id,
         dir: dir.to_path_buf(),
     })
 }
@@ -210,6 +248,43 @@ fn stringify(error: Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::hc::{self, fake};
+
+    #[test]
+    fn on_hc_the_agent_gets_a_shell_beside_the_popup_and_its_command_typed_in() {
+        let core = fake::Core::answering("agent", |method, _| match method {
+            "terminal.get" => json!({"result": {"address": "t1", "labels": {
+                hc::SPACE_LABEL: "sp1", hc::TAB_LABEL: "tb1",
+            }}}),
+            "terminal.run" => json!({"result": {"address": "t9"}}),
+            "terminal.send" => json!({"result": {"started": null}}),
+            other => {
+                json!({"error": {"code": -32601, "message": other, "data": {"kind": "unsupported"}}})
+            }
+        });
+        let config = Config {
+            command: vec!["claude".into()],
+        };
+        let dir = Path::new("/repos/storefront");
+        let launched = launch_in_hc(&core.hc(), &config, dir).expect("launched");
+        assert_eq!(launched.terminal, "t9");
+
+        let asked = core.asked();
+        let methods: Vec<&str> = asked.iter().filter_map(|a| a["method"].as_str()).collect();
+        assert_eq!(methods, ["terminal.get", "terminal.run", "terminal.send"]);
+        let run = &asked[1]["params"];
+        assert!(run.get("argv").is_none(), "{run}");
+        assert_eq!(run["cwd"], "/repos/storefront");
+        assert_eq!(
+            run["labels"],
+            json!({hc::SPACE_LABEL: "sp1", hc::TAB_LABEL: "tb1"})
+        );
+        assert_eq!(run["no_parent"], true);
+        let send = &asked[2]["params"];
+        assert_eq!(send["terminal"], "t9");
+        assert_eq!(send["text"], config.command_line_with(&prompt(dir)));
+    }
 
     #[test]
     fn the_repository_root_wins_over_a_pane_sitting_deeper() {

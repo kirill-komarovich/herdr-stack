@@ -296,7 +296,9 @@ fn six_included_repos_stay_six_rows_and_each_one_that_cannot_be_read_says_why() 
     );
     stage.look_at(&storefront);
 
-    let screen = stage.pty().wait_for("backoffice");
+    stage.pty().wait_for("backoffice");
+    // The footer is drawn last: a screen read as soon as the rows show can catch it half written.
+    let screen = stage.pty().wait_for("←→ repo");
     assert!(
         row_of(&screen, "billing").contains("9 services + 3 processes, from its own config"),
         "{screen}"

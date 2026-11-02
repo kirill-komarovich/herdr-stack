@@ -24,6 +24,9 @@ use crate::herdr::expand_tilde;
 
 /// Herdr's own config, read for the shell its panes run, so a unit gets the shell a new pane would.
 const HERDR_CONFIG: &str = ".config/herdr/config.toml";
+/// hc's, read for the shell its terminals run, when herdr names none. Under `XDG_CONFIG_HOME` when set.
+const HC_CONFIG: &str = ".config/herdr-core/config.toml";
+const HC_CONFIG_IN_XDG: &str = "herdr-core/config.toml";
 const FALLBACK: &str = "/bin/sh";
 /// What a shell given `-c` calls itself: `$0` to zsh and bash, which put the argv after it.
 const NAME: &str = "herdr-stack";
@@ -45,7 +48,8 @@ enum Family {
 }
 
 impl Shell {
-    /// The shell a new Herdr pane would get: Herdr's `default_shell`, then `$SHELL`, then `/bin/sh`.
+    /// The shell a new Herdr pane would get: herdr's `default_shell`, then the first word of hc's
+    /// `shell`, then `$SHELL`, then `/bin/sh`. One daemon serves both, so neither is asked which runs.
     /// Read from `env` rather than the process, because a daemon's own env is not the user's, and
     /// found on that `PATH` here because the unit's own will not have it.
     pub fn of(env: &[(String, String)]) -> Shell {
@@ -65,7 +69,24 @@ impl Shell {
                     .filter(|value| !value.is_empty())
                     .map(expand_tilde)
             });
+        let hc_shell = || {
+            let config = match var("XDG_CONFIG_HOME") {
+                Some(xdg) => Path::new(xdg).join(HC_CONFIG_IN_XDG),
+                None => Path::new(var("HOME")?).join(HC_CONFIG),
+            };
+            std::fs::read_to_string(config)
+                .ok()?
+                .parse::<DocumentMut>()
+                .ok()?
+                .get("shell")?
+                .as_array()?
+                .get(0)?
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(expand_tilde)
+        };
         let program = default_shell
+            .or_else(hc_shell)
             .or_else(|| var("SHELL").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from(FALLBACK));
         Shell {
@@ -322,6 +343,45 @@ mod tests {
         let shell = Shell::of(&env(&home, Some("/bin/zsh")));
         let _ = std::fs::remove_dir_all(&home);
         assert_eq!(shell, Shell::new("/opt/fish"));
+    }
+
+    fn hc_config(home: &Path, config: &str) {
+        std::fs::create_dir_all(home.join(".config/herdr-core")).expect("hc config dir");
+        std::fs::write(home.join(HC_CONFIG), config).expect("hc config");
+    }
+
+    #[test]
+    fn without_a_herdr_shell_a_unit_gets_the_shell_a_new_hc_terminal_would() {
+        let home = home_with("hc", None);
+        hc_config(&home, "shell = [\"/opt/nu\", \"--login\"]\n");
+        let shell = Shell::of(&env(&home, Some("/bin/zsh")));
+        let herdr_too = home_with(
+            "hc-and-herdr",
+            Some("[terminal]\ndefault_shell = \"/opt/fish\"\n"),
+        );
+        hc_config(&herdr_too, "shell = [\"/opt/nu\"]\n");
+        let herdrs = Shell::of(&env(&herdr_too, Some("/bin/zsh")));
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&herdr_too);
+        assert_eq!(shell, Shell::new("/opt/nu"));
+        assert_eq!(herdrs, Shell::new("/opt/fish"));
+    }
+
+    #[test]
+    fn hc_s_config_follows_xdg_config_home() {
+        let home = home_with("hc-xdg", None);
+        let xdg = home.join("xdg");
+        std::fs::create_dir_all(xdg.join("herdr-core")).expect("xdg");
+        std::fs::write(
+            xdg.join("herdr-core/config.toml"),
+            "shell = [\"/opt/nu\"]\n",
+        )
+        .expect("config");
+        let mut vars = env(&home, Some("/bin/zsh"));
+        vars.push(("XDG_CONFIG_HOME".into(), xdg.to_string_lossy().into_owned()));
+        let shell = Shell::of(&vars);
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(shell, Shell::new("/opt/nu"));
     }
 
     #[test]

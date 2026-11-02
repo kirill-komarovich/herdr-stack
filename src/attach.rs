@@ -50,6 +50,7 @@ pub fn run() -> io::Result<()> {
         .attach(&root, &unit)
         .map_err(io::Error::other)?;
 
+    crate::tail::entitle(&mut io::stdout())?;
     println!("{unit}  attached  —  ctrl-] detach");
     enable_raw_mode()?;
     install_panic_hook();
