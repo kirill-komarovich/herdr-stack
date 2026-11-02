@@ -34,3 +34,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: tests/container/run.sh ${{ matrix.herdr }}
+
+  hc:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        hc: ["0.1.16"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=${{ matrix.hc }} sh
+      - run: cargo test --locked --features hc-tests --test hc
