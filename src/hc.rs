@@ -150,8 +150,6 @@ pub fn cwds(listed: &Value) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    use std::os::unix::net::UnixListener;
-
     fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| {
             pairs
@@ -205,52 +203,93 @@ mod tests {
         assert!(cwds(&json!({})).is_empty());
     }
 
-    fn core(name: &str, reply: Value) -> (Hc, std::thread::JoinHandle<Value>) {
-        let socket = std::env::temp_dir().join(format!("hs-hc-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket).expect("a socket");
-        let asked = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("a caller");
-            let mut line = String::new();
-            BufReader::new(&stream)
-                .read_line(&mut line)
-                .expect("a line");
-            let asked: Value = serde_json::from_str(&line).expect("json");
-            let mut answer = reply;
-            answer["id"] = asked["id"].clone();
-            answer["jsonrpc"] = "2.0".into();
-            writeln!(&stream, "{answer}").expect("reply");
-            asked
-        });
-        let hc = Hc {
-            socket,
-            terminal: "t1".into(),
-        };
-        (hc, asked)
-    }
-
     #[test]
     fn a_request_is_json_rpc_and_its_result_comes_back() {
-        let (hc, asked) = core("result", json!({"result": {"address": "t1"}}));
-        assert_eq!(hc.own(), Ok(json!({"address": "t1"})));
-        let asked = asked.join().expect("asked");
-        assert_eq!(asked["jsonrpc"], "2.0");
-        assert_eq!(asked["method"], "terminal.get");
-        assert_eq!(asked["params"], json!({"terminal": "t1"}));
-        let _ = std::fs::remove_file(&hc.socket);
+        let core = fake::Core::answering("result", |_, _| json!({"result": {"address": "t1"}}));
+        assert_eq!(core.hc().own(), Ok(json!({"address": "t1"})));
+        let asked = core.asked();
+        assert_eq!(asked[0]["jsonrpc"], "2.0");
+        assert_eq!(asked[0]["method"], "terminal.get");
+        assert_eq!(asked[0]["params"], json!({"terminal": "t1"}));
     }
 
     #[test]
     fn a_refusal_says_its_kind_and_message() {
-        let (hc, asked) = core(
+        let core = fake::Core::answering(
             "refusal",
-            json!({"error": {"code": -32000, "message": "no terminal \"t1\"", "data": {"kind": "not_found"}}}),
+            |_, _| json!({"error": {"code": -32000, "message": "no terminal \"t1\"", "data": {"kind": "not_found"}}}),
         );
         assert_eq!(
-            hc.own(),
+            core.hc().own(),
             Err("hc refused terminal.get: not_found: no terminal \"t1\"".to_string())
         );
-        asked.join().expect("asked");
-        let _ = std::fs::remove_file(&hc.socket);
+    }
+}
+
+#[cfg(test)]
+pub mod fake {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::Value;
+
+    use super::Hc;
+
+    type Answer = dyn Fn(&str, &Value) -> Value + Send + Sync;
+
+    /// A core that answers each request with what `answer` makes of its method and params, and keeps
+    /// every request it was sent.
+    pub struct Core {
+        socket: PathBuf,
+        asked: Arc<Mutex<Vec<Value>>>,
+    }
+
+    impl Core {
+        pub fn answering(
+            name: &str,
+            answer: impl Fn(&str, &Value) -> Value + Send + Sync + 'static,
+        ) -> Core {
+            let socket = std::env::temp_dir().join(format!("hs-hc-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_file(&socket);
+            let listener = UnixListener::bind(&socket).expect("a socket");
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let answer: Arc<Answer> = Arc::new(answer);
+            let kept = Arc::clone(&asked);
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut line = String::new();
+                    if BufReader::new(&stream).read_line(&mut line).is_err() {
+                        continue;
+                    }
+                    let request: Value = serde_json::from_str(&line).unwrap_or_default();
+                    let method = request["method"].as_str().unwrap_or_default().to_string();
+                    let mut reply = answer(&method, &request["params"]);
+                    reply["id"] = request["id"].clone();
+                    reply["jsonrpc"] = "2.0".into();
+                    kept.lock().expect("asked").push(request);
+                    let _ = writeln!(&stream, "{reply}");
+                }
+            });
+            Core { socket, asked }
+        }
+
+        pub fn hc(&self) -> Hc {
+            Hc {
+                socket: self.socket.clone(),
+                terminal: "t1".into(),
+            }
+        }
+
+        pub fn asked(&self) -> Vec<Value> {
+            self.asked.lock().expect("asked").clone()
+        }
+    }
+
+    impl Drop for Core {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.socket);
+        }
     }
 }
